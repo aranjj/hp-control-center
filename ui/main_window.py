@@ -51,6 +51,8 @@ class MainWindow(QMainWindow):
         self.daemon_online = False
         self.unsaved_changes_count = 0
         self.sidebar_expanded = True
+        self._is_loading_profile = False
+        self._limits_loaded = False
 
         # Track base profile / baseline values for dirty check
         self._applied_settings = dict(self.profile_mgr.get_profile(self.profile_mgr.current_profile_key))
@@ -319,11 +321,11 @@ class MainWindow(QMainWindow):
         c_layout.addWidget(title)
 
         # Fixed-width, full-width sliders with explicit ranges and per-slider reset
-        self.slider_pl1 = SliderSetting("PL1 Sustained Limit (Long-term)", 12, 30, 25, "W")
+        self.slider_pl1 = SliderSetting("PL1 Sustained Limit (Long-term)", 10, 30, 25, "W")
         self.slider_pl1.valueChanged.connect(self._on_pl1_changed)
         c_layout.addWidget(self.slider_pl1)
 
-        self.slider_pl2 = SliderSetting("PL2 Burst Limit (Short-term)", 15, 35, 28, "W")
+        self.slider_pl2 = SliderSetting("PL2 Burst Limit (Short-term)", 10, 45, 28, "W")
         self.slider_pl2.valueChanged.connect(self._on_pl2_changed)
         c_layout.addWidget(self.slider_pl2)
 
@@ -577,20 +579,25 @@ class MainWindow(QMainWindow):
     # ==============================================
 
     def _on_pl1_changed(self, val: int):
+        if self._is_loading_profile:
+            return
         # Rule: PL2 should never be set below PL1
         if self.slider_pl2.get_value() < val:
             self.slider_pl2.set_value(val)
         self._on_setting_modified()
 
     def _on_pl2_changed(self, val: int):
+        if self._is_loading_profile:
+            return
         # Rule: PL2 should never be set below PL1
         if val < self.slider_pl1.get_value():
             self.slider_pl1.set_value(val)
         self._on_setting_modified()
 
     def _on_bdprochot_toggled(self, checked: bool):
+        if self._is_loading_profile:
+            return
         if checked:
-            # Confirmation dialog for safety
             reply = QMessageBox.warning(
                 self,
                 "Disable BD PROCHOT?",
@@ -607,7 +614,9 @@ class MainWindow(QMainWindow):
         self._on_setting_modified()
 
     def _on_setting_modified(self):
-        """Called whenever any setting is altered in UI."""
+        """Called whenever any setting is altered manually in UI."""
+        if self._is_loading_profile:
+            return
         # Switch profile highlight to Custom
         self.profile_segmented.set_selected("custom")
         self._recalculate_unsaved_changes()
@@ -617,33 +626,35 @@ class MainWindow(QMainWindow):
             return
         self.profile_mgr.set_active_profile(key)
         self._load_profile_into_ui(key)
-        self._recalculate_unsaved_changes()
 
     def _load_profile_into_ui(self, key: str):
-        p = self.profile_mgr.get_profile(key)
-        self.profile_segmented.set_selected(key)
+        self._is_loading_profile = True
+        try:
+            p = self.profile_mgr.get_profile(key)
+            self.profile_segmented.set_selected(key)
 
-        # Update sliders & settings without triggering false custom flag
-        self.slider_pl1.set_value(int(p.get("pl1_w", 24)))
-        self.slider_pl2.set_value(int(p.get("pl2_w", 25)))
-        self.chk_sync_mmio.setChecked(bool(p.get("sync_mmio", True)))
+            self.slider_pl1.set_value(int(p.get("pl1_w", 24)))
+            self.slider_pl2.set_value(int(p.get("pl2_w", 25)))
+            self.chk_sync_mmio.setChecked(bool(p.get("sync_mmio", True)))
 
-        self.chk_bdprochot.blockSignals(True)
-        self.chk_bdprochot.setChecked(bool(p.get("disable_bdprochot", True)))
-        self.chk_bdprochot.blockSignals(False)
+            self.chk_bdprochot.blockSignals(True)
+            self.chk_bdprochot.setChecked(bool(p.get("disable_bdprochot", True)))
+            self.chk_bdprochot.blockSignals(False)
 
-        self.slider_gpu_min.set_value(int(p.get("gpu_min_mhz", 100)))
-        self.slider_gpu_max.set_value(int(p.get("gpu_max_mhz", 1250)))
+            self.slider_gpu_min.set_value(int(p.get("gpu_min_mhz", 100)))
+            self.slider_gpu_max.set_value(int(p.get("gpu_max_mhz", 1250)))
 
-        self.chk_turbo.setChecked(bool(p.get("turbo_boost", True)))
+            self.chk_turbo.setChecked(bool(p.get("turbo_boost", True)))
 
-        idx_epp = self.combo_epp.findText(p.get("cpu_epp", "balance_performance"))
-        if idx_epp >= 0:
-            self.combo_epp.setCurrentIndex(idx_epp)
+            idx_epp = self.combo_epp.findText(p.get("cpu_epp", "balance_performance"))
+            if idx_epp >= 0:
+                self.combo_epp.setCurrentIndex(idx_epp)
 
-        idx_gpu_p = self.combo_gpu_power.findText(p.get("gpu_power_mode", "base"))
-        if idx_gpu_p >= 0:
-            self.combo_gpu_power.setCurrentIndex(idx_gpu_p)
+            idx_gpu_p = self.combo_gpu_power.findText(p.get("gpu_power_mode", "base"))
+            if idx_gpu_p >= 0:
+                self.combo_gpu_power.setCurrentIndex(idx_gpu_p)
+        finally:
+            self._is_loading_profile = False
 
         self._recalculate_unsaved_changes()
 
@@ -708,6 +719,15 @@ class MainWindow(QMainWindow):
             self.daemon_lbl.setText("Daemon Connected")
             self.daemon_detail_lbl.setText("Status: Online (Active Unix Socket)")
             self.daemon_detail_lbl.setStyleSheet("color: #00e676; font-weight: bold;")
+            if not self._limits_loaded:
+                lim_resp = self._send_to_daemon({"cmd": "get_limits"})
+                if lim_resp.get("status") == "ok":
+                    lim = lim_resp.get("hardware_limits", {})
+                    self.slider_pl1.set_range(int(lim.get("pl1_min_w", 10)), int(lim.get("pl1_max_w", 30)))
+                    self.slider_pl2.set_range(int(lim.get("pl2_min_w", 10)), int(lim.get("pl2_max_w", 45)))
+                    self.slider_gpu_min.set_range(int(lim.get("gpu_min_mhz", 100)), int(lim.get("gpu_max_mhz", 1250)))
+                    self.slider_gpu_max.set_range(int(lim.get("gpu_min_mhz", 100)), int(lim.get("gpu_max_mhz", 1250)))
+                    self._limits_loaded = True
         else:
             self.daemon_dot.setStyleSheet("color: #ff3366; font-size: 14px;")
             self.daemon_lbl.setText("Daemon Offline")

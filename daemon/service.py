@@ -1,7 +1,7 @@
 """
 HP Control Center Background Daemon
 Runs as root to enforce MSR/MMIO limits and prevent HP EC power decay.
-Listens on a local Unix socket for commands from the user GUI.
+All hardware clamping and validation occurs here.
 """
 
 import os
@@ -22,6 +22,18 @@ from core.profiles import DEFAULT_PROFILES
 
 SOCKET_PATH = "/tmp/hp_control_center.sock"
 
+# Hardware Safety Constraints for i7-1255U & HP 15 Chassis
+HARDWARE_LIMITS = {
+    "pl1_min_w": 10.0,
+    "pl1_max_w": 30.0,
+    "pl2_min_w": 10.0,
+    "pl2_max_w": 45.0,
+    "gpu_min_mhz": 100,
+    "gpu_max_mhz": 1250,
+    "valid_epp": ["performance", "balance_performance", "balance_power", "power", "default"],
+    "valid_gpu_modes": ["base", "power_saving"],
+}
+
 
 class DaemonService:
     def __init__(self):
@@ -31,42 +43,75 @@ class DaemonService:
         self.active_settings = dict(DEFAULT_PROFILES["balanced"])
         self.lock = threading.Lock()
 
+    def clamp_and_validate_settings(self, settings: dict) -> dict:
+        """Strictly clamps and sanitizes all incoming profile parameters."""
+        clamped = {}
+
+        # 1. PL1 Clamping
+        raw_pl1 = float(settings.get("pl1_w", 24.0))
+        pl1 = max(HARDWARE_LIMITS["pl1_min_w"], min(HARDWARE_LIMITS["pl1_max_w"], raw_pl1))
+        clamped["pl1_w"] = round(pl1, 1)
+
+        # 2. PL2 Clamping (PL2 must always be >= PL1)
+        raw_pl2 = float(settings.get("pl2_w", 25.0))
+        pl2 = max(clamped["pl1_w"], min(HARDWARE_LIMITS["pl2_max_w"], raw_pl2))
+        clamped["pl2_w"] = round(pl2, 1)
+
+        # 3. MMIO & BDPROCHOT flags
+        clamped["sync_mmio"] = bool(settings.get("sync_mmio", True))
+        clamped["disable_bdprochot"] = bool(settings.get("disable_bdprochot", True))
+
+        # 4. Intel Iris Xe GPU Clocks
+        raw_gpu_min = int(settings.get("gpu_min_mhz", 100))
+        gpu_min = max(HARDWARE_LIMITS["gpu_min_mhz"], min(HARDWARE_LIMITS["gpu_max_mhz"], raw_gpu_min))
+        clamped["gpu_min_mhz"] = gpu_min
+
+        raw_gpu_max = int(settings.get("gpu_max_mhz", 1250))
+        gpu_max = max(clamped["gpu_min_mhz"], min(HARDWARE_LIMITS["gpu_max_mhz"], raw_gpu_max))
+        clamped["gpu_max_mhz"] = gpu_max
+
+        # 5. GPU Power Mode
+        p_mode = str(settings.get("gpu_power_mode", "base"))
+        clamped["gpu_power_mode"] = p_mode if p_mode in HARDWARE_LIMITS["valid_gpu_modes"] else "base"
+
+        # 6. CPU Turbo Boost
+        clamped["turbo_boost"] = bool(settings.get("turbo_boost", True))
+
+        # 7. CPU EPP & Governor
+        epp = str(settings.get("cpu_epp", "balance_performance"))
+        clamped["cpu_epp"] = epp if epp in HARDWARE_LIMITS["valid_epp"] else "balance_performance"
+
+        gov = str(settings.get("cpu_governor", "powersave"))
+        clamped["cpu_governor"] = gov if gov in ("performance", "powersave") else "powersave"
+
+        return clamped
+
     def apply_current_settings(self):
-        """Applies the current profile settings to the hardware."""
+        """Applies the validated profile settings directly to the hardware."""
         with self.lock:
             s = self.active_settings
             try:
                 # 1. Package Power Limits (MSR + MMIO)
-                pl1 = float(s.get("pl1_w", 24.0))
-                pl2 = float(s.get("pl2_w", 25.0))
-                sync_mmio = bool(s.get("sync_mmio", True))
-                self.hw.set_package_power_limits(pl1, pl2, sync_mmio=sync_mmio)
+                self.hw.set_package_power_limits(s["pl1_w"], s["pl2_w"], sync_mmio=s["sync_mmio"])
 
                 # 2. BD PROCHOT
-                disable_bd = bool(s.get("disable_bdprochot", True))
-                self.hw.set_bdprochot_disabled(disable_bd)
+                self.hw.set_bdprochot_disabled(s["disable_bdprochot"])
 
                 # 3. Intel Iris Xe GPU Clocks
-                min_mhz = int(s.get("gpu_min_mhz", 100))
-                max_mhz = int(s.get("gpu_max_mhz", 1250))
-                p_mode = str(s.get("gpu_power_mode", "base"))
-                self.hw.set_gpu_clocks(min_mhz, max_mhz, p_mode)
+                self.hw.set_gpu_clocks(s["gpu_min_mhz"], s["gpu_max_mhz"], s["gpu_power_mode"])
 
                 # 4. CPU Turbo Boost
-                turbo = bool(s.get("turbo_boost", True))
-                self.hw.set_cpu_turbo(turbo)
+                self.hw.set_cpu_turbo(s["turbo_boost"])
 
                 # 5. CPU Governor & EPP
-                epp = str(s.get("cpu_epp", "balance_performance"))
-                self.hw.set_cpu_epp(epp)
-                gov = str(s.get("cpu_governor", "powersave"))
-                self.hw.set_cpu_governor(gov)
+                self.hw.set_cpu_epp(s["cpu_epp"])
+                self.hw.set_cpu_governor(s["cpu_governor"])
 
             except Exception as e:
                 print(f"[!] Error applying settings: {e}", file=sys.stderr)
 
     def power_loop(self):
-        """Continuously re-asserts power limits to defeat EC decay."""
+        """Continuously re-asserts power limits every 5s on AC (25s on Battery)."""
         while self.running:
             is_ac = self.telemetry.is_ac_connected()
             sleep_time = 5.0 if is_ac else 25.0
@@ -84,11 +129,22 @@ class DaemonService:
             cmd = msg.get("cmd")
 
             if cmd == "apply":
-                new_settings = msg.get("settings", {})
+                raw_settings = msg.get("settings", {})
+                validated = self.clamp_and_validate_settings(raw_settings)
                 with self.lock:
-                    self.active_settings.update(new_settings)
+                    self.active_settings.update(validated)
                 self.apply_current_settings()
-                resp = {"status": "ok", "message": "Settings applied successfully."}
+                resp = {
+                    "status": "ok",
+                    "message": "Settings clamped, validated, and applied successfully.",
+                    "applied_settings": self.active_settings,
+                }
+            elif cmd == "get_limits":
+                resp = {
+                    "status": "ok",
+                    "hardware_limits": HARDWARE_LIMITS,
+                    "default_profiles": DEFAULT_PROFILES,
+                }
             elif cmd == "get_status":
                 with self.lock:
                     resp = {
