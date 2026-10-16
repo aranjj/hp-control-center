@@ -140,20 +140,69 @@ class MainWindow(QMainWindow):
         self._update_responsive_layout(self.width())
 
     def _update_responsive_layout(self, width: int):
-        """Responsive card layout: 2 columns when width > 1100 px, 1 column otherwise."""
-        is_wide = width > 1100
-        if getattr(self, "_last_is_wide", None) == is_wide:
-            return
-        self._last_is_wide = is_wide
+        """Responsive layout: profile tabs, HUD tiles, card columns, and bottom bar."""
+        # 1. Profile segmented tabs adaptation
+        if hasattr(self, "profile_segmented"):
+            if width > 1080:
+                self.profile_segmented.set_compact_mode(0)  # Full: "Ultra Gaming (25W)"
+            elif width > 860:
+                self.profile_segmented.set_compact_mode(1)  # Compact: "Gaming (25W)"
+            else:
+                self.profile_segmented.set_compact_mode(2)  # Minimal: "Gaming"
 
-        if hasattr(self, "perf_grid"):
-            self._relayout_tab_cards(self.perf_grid, self.perf_cards, is_wide)
-        if hasattr(self, "disp_grid"):
-            self._relayout_tab_cards(self.disp_grid, self.disp_cards, is_wide)
-        if hasattr(self, "sysinfo_grid"):
-            self._relayout_tab_cards(self.sysinfo_grid, self.sysinfo_cards, is_wide, span_last=True)
-        if hasattr(self, "settings_grid"):
-            self._relayout_tab_cards(self.settings_grid, self.settings_cards, is_wide)
+        # 2. Power source badge text
+        if hasattr(self, "power_src_badge"):
+            is_ac = "AC" in self.power_src_badge.text()
+            self.power_src_badge.setText("AC" if (width <= 860 and is_ac) else ("AC POWER" if is_ac else ("BAT" if width <= 860 else "BATTERY")))
+
+        # 3. Bottom bar adaptation
+        if hasattr(self, "btn_reset_all") and hasattr(self, "btn_apply"):
+            if width <= 920:
+                self.btn_reset_all.setText("Reset")
+                self.btn_apply.setText("Apply")
+            else:
+                self.btn_reset_all.setText("Reset Defaults")
+                self.btn_apply.setText("Apply Settings")
+        if hasattr(self, "mini_telemetry_lbl"):
+            self.mini_telemetry_lbl.setVisible(width > 860)
+
+        # 4. Multi-column settings cards (2 cols > 1100, 1 col <= 1100)
+        is_wide = width > 1100
+        if getattr(self, "_last_is_wide", None) != is_wide:
+            self._last_is_wide = is_wide
+            if hasattr(self, "perf_grid"):
+                self._relayout_tab_cards(self.perf_grid, self.perf_cards, is_wide)
+            if hasattr(self, "disp_grid"):
+                self._relayout_tab_cards(self.disp_grid, self.disp_cards, is_wide)
+            if hasattr(self, "sysinfo_grid"):
+                self._relayout_tab_cards(self.sysinfo_grid, self.sysinfo_cards, is_wide, span_last=True)
+            if hasattr(self, "settings_grid"):
+                self._relayout_tab_cards(self.settings_grid, self.settings_cards, is_wide)
+
+        # 5. Dashboard HUD grid (3 cols > 1000, 2 cols <= 1000)
+        is_hud_wide = width > 1000
+        if getattr(self, "_last_is_hud_wide", None) != is_hud_wide:
+            self._last_is_hud_wide = is_hud_wide
+            if hasattr(self, "hud_grid") and hasattr(self, "hud_cards"):
+                self._relayout_hud_cards(is_hud_wide)
+
+    def _relayout_hud_cards(self, is_wide: bool):
+        if not hasattr(self, "hud_grid") or not hasattr(self, "hud_cards"):
+            return
+        for card in self.hud_cards:
+            self.hud_grid.removeWidget(card)
+        if is_wide:
+            self.hud_grid.setColumnStretch(0, 1)
+            self.hud_grid.setColumnStretch(1, 1)
+            self.hud_grid.setColumnStretch(2, 1)
+            for i, card in enumerate(self.hud_cards):
+                self.hud_grid.addWidget(card, i // 3, i % 3)
+        else:
+            self.hud_grid.setColumnStretch(0, 1)
+            self.hud_grid.setColumnStretch(1, 1)
+            self.hud_grid.setColumnStretch(2, 0)
+            for i, card in enumerate(self.hud_cards):
+                self.hud_grid.addWidget(card, i // 2, i % 2)
 
     def _relayout_tab_cards(self, grid: QGridLayout, cards: list, is_wide: bool, span_last: bool = False):
         if not grid or not cards:
@@ -260,10 +309,10 @@ class MainWindow(QMainWindow):
 
         # Segmented Profile Switcher
         profile_items = [
-            ("ultra_gaming", "Ultra Gaming", "25W"),
-            ("balanced", "Daily Balanced", "24W"),
-            ("eco_quiet", "Silent Eco", "15W"),
-            ("custom", "Custom", ""),
+            ("ultra_gaming", "Ultra Gaming", "Gaming", "25W"),
+            ("balanced", "Daily Balanced", "Balanced", "24W"),
+            ("eco_quiet", "Silent Eco", "Eco", "15W"),
+            ("custom", "Custom", "Custom", ""),
         ]
         self.profile_segmented = SegmentedControl(profile_items)
         self.profile_segmented.selectionChanged.connect(self._on_profile_selected)
@@ -415,6 +464,16 @@ class MainWindow(QMainWindow):
         e_count = len(self.telemetry.e_core_threads)
         self.card_ecore = StatCard("E-Cores (Avg)", "--", "GHz", f"{e_count} Threads", min_floor=0.0, max_floor=3.5, accent_color="#0ea5e9")
         hud_grid.addWidget(self.card_ecore, 1, 2)
+
+        self.hud_grid = hud_grid
+        self.hud_cards = [
+            self.card_power,
+            self.card_temp,
+            self.card_fan,
+            self.card_gpu,
+            self.card_pcore,
+            self.card_ecore,
+        ]
 
         layout.addLayout(hud_grid)
         layout.addStretch()
@@ -1812,7 +1871,7 @@ class MainWindow(QMainWindow):
             )
         else:
             self.card_power.update_value(
-                f"{watts:.1f}", f"Target PL1: {target}.0 W", badge_text="THROTTLE: NONE", numeric_val=watts
+                f"{watts:.1f}", f"Target PL1: {target}.0 W", badge_text=None, numeric_val=watts
             )
 
         # Temp with semantic fixed status colors

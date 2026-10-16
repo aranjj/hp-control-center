@@ -1046,27 +1046,59 @@ class ThreadIndicatorWidget(QWidget):
 
 
 class SegmentedControl(QFrame):
-    """Horizontal segmented button control for profiles with min-width and padding."""
+    """Horizontal segmented button control for profiles with responsive label adaptation."""
 
     selectionChanged = Signal(str)
 
-    def __init__(self, items: list[tuple[str, str, str]]):
+    def __init__(self, items: list[tuple]):
         super().__init__()
         self.setProperty("class", "SegmentedControlFrame")
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(2, 2, 2, 2)
         self.layout.setSpacing(4)
 
+        self._items = []
+        for item in items:
+            if len(item) >= 4:
+                self._items.append((item[0], item[1], item[2], item[3]))
+            elif len(item) == 3:
+                self._items.append((item[0], item[1], item[1], item[2]))
+            else:
+                self._items.append((item[0], item[1], item[1], ""))
+
+        self._current_mode = -1
         self.buttons: dict[str, QPushButton] = {}
-        for key, title, sub in items:
-            btn = QPushButton(f"{title} ({sub})" if sub else title)
+        for key, full_title, compact_title, sub in self._items:
+            btn = QPushButton()
             btn.setCheckable(True)
             btn.setProperty("profileKey", key)
             btn.setProperty("class", "SegmentBtn")
             btn.setCursor(Qt.PointingHandCursor)
+            btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             btn.clicked.connect(lambda checked, k=key: self._on_btn_clicked(k))
+            if sub:
+                btn.setToolTip(f"{full_title} ({sub})")
+            else:
+                btn.setToolTip(full_title)
             self.buttons[key] = btn
             self.layout.addWidget(btn)
+
+        self.set_compact_mode(0)
+
+    def set_compact_mode(self, mode: int):
+        if self._current_mode == mode:
+            return
+        self._current_mode = mode
+        for key, full_title, compact_title, sub in self._items:
+            btn = self.buttons.get(key)
+            if not btn:
+                continue
+            if mode == 0:
+                btn.setText(f"{full_title} ({sub})" if sub else full_title)
+            elif mode == 1:
+                btn.setText(f"{compact_title} ({sub})" if sub else compact_title)
+            else:
+                btn.setText(compact_title)
 
     def _on_btn_clicked(self, key: str):
         self.set_selected(key)

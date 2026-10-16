@@ -118,9 +118,8 @@ QPushButton.SegmentBtn {{
     border-radius: 6px;
     color: palette(window-text);
     font-weight: 600;
-    padding: 7px 18px;
+    padding: 6px 12px;
     font-size: 12px;
-    min-width: 130px;
 }}
 QPushButton.SegmentBtn:hover {{
     background-color: palette(alternate-base);
