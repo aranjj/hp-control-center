@@ -458,8 +458,8 @@ class StatCard(QFrame):
 
         if badge_text:
             self.badge_lbl.setText(badge_text)
-            self.badge_lbl.adjustSize()
-            self.badge_lbl.setMinimumWidth(self.badge_lbl.sizeHint().width() + 6)
+            w = self.badge_lbl.fontMetrics().horizontalAdvance(badge_text) + 16
+            self.badge_lbl.setFixedWidth(w)
             self.badge_lbl.setVisible(True)
             if badge_color:
                 self.badge_lbl.setStyleSheet(

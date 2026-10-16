@@ -334,6 +334,9 @@ class MainWindow(QMainWindow):
 
         hud_grid = QGridLayout()
         hud_grid.setSpacing(12)
+        hud_grid.setColumnStretch(0, 1)
+        hud_grid.setColumnStretch(1, 1)
+        hud_grid.setColumnStretch(2, 1)
 
         # Tile 1: Package Power with Throttle Reason
         self.card_power = StatCard("Package Power", "0.0", "W", "Target: 25.0 W", min_floor=0.0, max_floor=30.0, accent_color="#38bdf8")
