@@ -126,6 +126,13 @@ class DaemonService:
         clamped["thermal_target_c"] = max(69, min(100, raw_target))
         clamped["use_hardware_tcc"] = bool(settings.get("use_hardware_tcc", False)) and self.tcc_writable
 
+        # 11. Power Limits Re-assertion Interval (seconds, 0 = Disabled)
+        try:
+            raw_reassert = int(settings.get("reassert_interval_s", 10))
+            clamped["reassert_interval_s"] = max(0, min(120, raw_reassert))
+        except (ValueError, TypeError):
+            clamped["reassert_interval_s"] = 10
+
         return clamped
 
     def apply_current_settings(self):
@@ -242,16 +249,32 @@ class DaemonService:
                 else:
                     self.thermal_state = "Holding"
 
+    def reassert_power_limits(self):
+        """Quickly re-asserts MSR 0x610 and MMIO RAPL power limits to defeat EC/DPTF resets."""
+        with self.lock:
+            s = self.active_settings
+            pl1 = self.effective_pl1_w if (self.effective_pl1_w is not None and self.thermal_state == "Reducing PL1") else float(s.get("pl1_w", 24.0))
+            pl2 = max(pl1, float(s.get("pl2_w", 28.0)))
+            sync_mmio = bool(s.get("sync_mmio", True))
+            self.hw.set_package_power_limits(pl1, pl2, sync_mmio=sync_mmio)
+
     def power_loop(self):
-        """Continuously re-asserts power limits and manages 1Hz thermal loop."""
-        last_reassert = 0.0
+        """Periodically re-asserts power limits at the configured interval and manages 1Hz thermal loop."""
+        last_reassert = time.time()
+        last_ac = None
         while self.running:
             now = time.time()
             is_ac = self.telemetry.is_ac_connected()
-            reassert_interval = 5.0 if is_ac else 25.0
 
-            if now - last_reassert >= reassert_interval:
-                self.apply_current_settings()
+            with self.lock:
+                interval = int(self.active_settings.get("reassert_interval_s", 10))
+
+            # Trigger reassert if interval elapsed, or immediately on AC/Battery transition
+            ac_changed = (last_ac is not None and is_ac != last_ac)
+            last_ac = is_ac
+
+            if ac_changed or (interval > 0 and (now - last_reassert >= interval)):
+                self.reassert_power_limits()
                 last_reassert = now
 
             self._tick_thermal_target()

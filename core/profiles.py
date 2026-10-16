@@ -27,6 +27,7 @@ DEFAULT_PROFILES = {
         "e_core_max_mhz": 3500,
         "thermal_target_c": 97,
         "use_hardware_tcc": False,
+        "reassert_interval_s": 5,
     },
     "balanced": {
         "name": "Daily Balanced",
@@ -46,6 +47,7 @@ DEFAULT_PROFILES = {
         "e_core_max_mhz": 3500,
         "thermal_target_c": 95,
         "use_hardware_tcc": False,
+        "reassert_interval_s": 10,
     },
     "eco_quiet": {
         "name": "Silent & Eco",
@@ -65,6 +67,7 @@ DEFAULT_PROFILES = {
         "e_core_max_mhz": 2000,
         "thermal_target_c": 85,
         "use_hardware_tcc": False,
+        "reassert_interval_s": 30,
     },
 }
 

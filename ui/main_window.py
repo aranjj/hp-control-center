@@ -411,6 +411,22 @@ class MainWindow(QMainWindow):
         grid_pwr.addWidget(lbl_mmio, 3, 0)
         grid_pwr.addWidget(self.chk_sync_mmio, 3, 1, 1, 2)
 
+        lbl_reassert = QLabel("Periodic Re-assertion:")
+        lbl_reassert.setProperty("class", "FormLabel")
+        lbl_reassert.setFixedWidth(LABEL_COL_WIDTH)
+        self.combo_reassert = QComboBox()
+        self.combo_reassert.setFixedWidth(COMBO_WIDTH)
+        self.combo_reassert.addItem("Disabled (Apply once)", 0)
+        self.combo_reassert.addItem("Every 3 seconds", 3)
+        self.combo_reassert.addItem("Every 5 seconds (Recommended)", 5)
+        self.combo_reassert.addItem("Every 10 seconds", 10)
+        self.combo_reassert.addItem("Every 30 seconds", 30)
+        self.combo_reassert.addItem("Every 60 seconds", 60)
+        self.combo_reassert.setToolTip("Periodically reapplies MSR and MMIO power limits to defeat OEM EC/DPTF resets")
+        self.combo_reassert.currentIndexChanged.connect(self._on_setting_modified)
+        grid_pwr.addWidget(lbl_reassert, 4, 0)
+        grid_pwr.addWidget(self.combo_reassert, 4, 1, Qt.AlignLeft)
+
         layout.addWidget(card_pwr)
 
         # ----------------------------------------------------
@@ -1447,6 +1463,11 @@ class MainWindow(QMainWindow):
         if idx_epp >= 0:
             self.combo_epp.setCurrentIndex(idx_epp)
 
+        if hasattr(self, "combo_reassert"):
+            idx_reassert = self.combo_reassert.findData(prof.get("reassert_interval_s", 10))
+            if idx_reassert >= 0:
+                self.combo_reassert.setCurrentIndex(idx_reassert)
+
         topo = getattr(self, "cpu_topo", None) or get_cpu_topology_info()
         if hasattr(self, "slider_p_max"):
             self.slider_p_max.set_value(prof.get("p_core_max_mhz", topo["p_max_mhz"]))
@@ -1505,6 +1526,8 @@ class MainWindow(QMainWindow):
             settings["thermal_target_c"] = self.slider_thermal.get_value()
         if hasattr(self, "chk_hardware_tcc"):
             settings["use_hardware_tcc"] = self.chk_hardware_tcc.isChecked()
+        if hasattr(self, "combo_reassert") and self.combo_reassert.currentData() is not None:
+            settings["reassert_interval_s"] = int(self.combo_reassert.currentData())
         return settings
 
     def _recalculate_unsaved_changes(self):
