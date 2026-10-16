@@ -514,6 +514,7 @@ class MainWindow(QMainWindow):
         d_card = QFrame()
         d_card.setProperty("class", "CardFrame")
         d_layout = QVBoxLayout(d_card)
+        d_layout.setSpacing(10)
 
         d_title = QLabel("🔌 Hardware Sync Daemon (Root Service)")
         d_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
@@ -523,11 +524,29 @@ class MainWindow(QMainWindow):
         self.daemon_detail_lbl.setStyleSheet("color: #a0aec0; font-size: 12px;")
         d_layout.addWidget(self.daemon_detail_lbl)
 
-        d_cmds = QLabel("To enable the background daemon:\n"
-                        "  sudo cp /home/aran/Projects/Github/hp-control-center/daemon/hp-control-daemon.service /etc/systemd/system/\n"
-                        "  sudo systemctl daemon-reload\n"
-                        "  sudo systemctl enable --now hp-control-daemon")
+        # Copyable Commands Header & Action
+        cmd_hdr = QHBoxLayout()
+        cmd_info = QLabel("Enable background service (run from project folder):")
+        cmd_info.setStyleSheet("color: #a0aec0; font-size: 12px; font-weight: 500;")
+        cmd_hdr.addWidget(cmd_info)
+        cmd_hdr.addStretch()
+
+        daemon_cmds_text = (
+            "sudo cp daemon/hp-control-daemon.service /etc/systemd/system/\n"
+            "sudo systemctl daemon-reload\n"
+            "sudo systemctl enable --now hp-control-daemon"
+        )
+
+        btn_copy = QPushButton("📋 Copy Commands")
+        btn_copy.setProperty("class", "SecondaryButton")
+        btn_copy.setFixedHeight(28)
+        btn_copy.clicked.connect(lambda: self._copy_to_clipboard(daemon_cmds_text, btn_copy))
+        cmd_hdr.addWidget(btn_copy)
+        d_layout.addLayout(cmd_hdr)
+
+        d_cmds = QLabel(daemon_cmds_text)
         d_cmds.setProperty("class", "CodeBlock")
+        d_cmds.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         d_layout.addWidget(d_cmds)
 
         layout.addWidget(d_card)
@@ -579,6 +598,15 @@ class MainWindow(QMainWindow):
                     card.unit_lbl.style().unpolish(card.unit_lbl)
                     card.unit_lbl.style().polish(card.unit_lbl)
         self.update()
+
+    def _copy_to_clipboard(self, text: str, btn: QPushButton = None):
+        clipboard = QApplication.clipboard()
+        if clipboard:
+            clipboard.setText(text)
+        if btn:
+            orig = btn.text()
+            btn.setText("✓ Copied!")
+            QTimer.singleShot(2000, lambda: btn.setText(orig))
 
     # ==============================================
     # NAVIGATION & SIDEBAR
