@@ -136,7 +136,7 @@ class StatCard(QFrame):
 
         if unit:
             self.unit_lbl = QLabel(unit)
-            self.unit_lbl.setStyleSheet("font-size: 13px; color: #00e5ff; font-weight: 600; margin-bottom: 4px;")
+            self.unit_lbl.setProperty("class", "CardUnitAccent")
             self.unit_lbl.setAlignment(Qt.AlignBottom)
             val_row.addWidget(self.unit_lbl)
         val_row.addStretch()
@@ -220,11 +220,7 @@ class SliderSetting(QFrame):
         self.spin.setSuffix(f" {self.unit}")
         self.spin.setFixedWidth(84)
         self.spin.setAlignment(Qt.AlignCenter)
-        self.spin.setStyleSheet(
-            "QSpinBox { background-color: #161c26; color: #00e5ff; font-weight: bold; "
-            "border: 1px solid #233147; border-radius: 4px; padding: 3px; font-size: 12px; }"
-            "QSpinBox:focus { border: 1px solid #00e5ff; }"
-        )
+        self.spin.setProperty("class", "SettingSpin")
         self.spin.valueChanged.connect(self._on_spin_changed)
         header.addWidget(self.spin)
 
@@ -232,11 +228,7 @@ class SliderSetting(QFrame):
         self.btn_reset = QToolButton()
         self.btn_reset.setText("↺")
         self.btn_reset.setToolTip(f"Reset to default ({default_val} {self.unit})")
-        self.btn_reset.setStyleSheet(
-            "QToolButton { background-color: #1a2230; color: #718096; border: 1px solid #233147; "
-            "border-radius: 4px; font-weight: bold; padding: 3px 6px; }"
-            "QToolButton:hover { color: #00e5ff; border: 1px solid #00e5ff; background-color: #202b3d; }"
-        )
+        self.btn_reset.setProperty("class", "SettingReset")
         self.btn_reset.clicked.connect(self.reset_to_default)
         header.addWidget(self.btn_reset)
 
@@ -312,11 +304,7 @@ class CollapsibleSection(QFrame):
 
         # Header button
         self.toggle_btn = QToolButton()
-        self.toggle_btn.setStyleSheet(
-            "QToolButton { border: none; font-weight: bold; font-size: 13px; color: #ffffff; "
-            "text-align: left; background: transparent; padding: 2px 0px; }"
-            "QToolButton:hover { color: #00e5ff; }"
-        )
+        self.toggle_btn.setProperty("class", "SectionToggle")
         self.toggle_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.toggle_btn.setArrowType(Qt.DownArrow if is_expanded else Qt.RightArrow)
         self.toggle_btn.setText(f" {title}")
@@ -350,9 +338,7 @@ class SegmentedControl(QFrame):
 
     def __init__(self, items: list[tuple[str, str, str]]):
         super().__init__()
-        self.setStyleSheet(
-            "QFrame { background-color: #10141d; border: 1px solid #1a2230; border-radius: 8px; padding: 3px; }"
-        )
+        self.setProperty("class", "SegmentedControlFrame")
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(2, 2, 2, 2)
         self.layout.setSpacing(4)
@@ -362,12 +348,7 @@ class SegmentedControl(QFrame):
             btn = QPushButton(f"{title} ({sub})" if sub else title)
             btn.setCheckable(True)
             btn.setProperty("profileKey", key)
-            btn.setStyleSheet(
-                "QPushButton { background-color: transparent; border: none; border-radius: 6px; "
-                "color: #8c9ba5; font-weight: 600; padding: 8px 14px; font-size: 12px; }"
-                "QPushButton:hover { background-color: #171d2a; color: #ffffff; }"
-                "QPushButton:checked { background-color: #1e2838; color: #00e5ff; font-weight: bold; border: 1px solid #00e5ff; }"
-            )
+            btn.setProperty("class", "SegmentBtn")
             btn.clicked.connect(lambda checked, k=key: self._on_btn_clicked(k))
             self.buttons[key] = btn
             self.layout.addWidget(btn)
@@ -379,29 +360,8 @@ class SegmentedControl(QFrame):
     def set_selected(self, key: str):
         for k, btn in self.buttons.items():
             btn.setChecked(k == key)
-            if k == key:
-                if k == "ultra_gaming":
-                    btn.setStyleSheet(
-                        "QPushButton { background-color: #27141d; color: #ff3366; font-weight: bold; border: 1px solid #ff3366; border-radius: 6px; padding: 8px 14px; }"
-                    )
-                elif k == "balanced":
-                    btn.setStyleSheet(
-                        "QPushButton { background-color: #10212e; color: #00e5ff; font-weight: bold; border: 1px solid #00e5ff; border-radius: 6px; padding: 8px 14px; }"
-                    )
-                elif k == "eco_quiet":
-                    btn.setStyleSheet(
-                        "QPushButton { background-color: #122419; color: #00e676; font-weight: bold; border: 1px solid #00e676; border-radius: 6px; padding: 8px 14px; }"
-                    )
-                else:
-                    btn.setStyleSheet(
-                        "QPushButton { background-color: #202736; color: #f6ad55; font-weight: bold; border: 1px solid #f6ad55; border-radius: 6px; padding: 8px 14px; }"
-                    )
-            else:
-                btn.setStyleSheet(
-                    "QPushButton { background-color: transparent; border: none; border-radius: 6px; "
-                    "color: #8c9ba5; font-weight: 600; padding: 8px 14px; font-size: 12px; }"
-                    "QPushButton:hover { background-color: #171d2a; color: #ffffff; }"
-                )
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
 
 
 class RevertCountdownDialog(QDialog):

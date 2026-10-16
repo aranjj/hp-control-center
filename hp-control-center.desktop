@@ -1,10 +1,19 @@
 [Desktop Entry]
-Name=HP Performance Center
+Categories=System;Settings;HardwareSettings;
+Comment[en_US]=Gaming & Power Tuning for HP 15 i7-1255U
 Comment=Gaming & Power Tuning for HP 15 i7-1255U
 Exec=/usr/bin/python3 /home/aran/Projects/Github/hp-control-center/app.py
+GenericName[en_US]=
+GenericName=
 Icon=utilities-system-monitor
-Terminal=false
-Type=Application
-Categories=System;Settings;HardwareSettings;
 Keywords=intel;power;throttled;undervolt;performance;hp;gaming;
+MimeType=
+Name[en_US]=HP Performance Center
+Name=HP Performance Center
+Path=
 StartupNotify=true
+Terminal=false
+TerminalOptions=
+Type=Application
+X-KDE-SubstituteUID=false
+X-KDE-Username=

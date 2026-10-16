@@ -34,7 +34,7 @@ from PySide6.QtGui import QIcon
 
 from core.telemetry import TelemetryReader
 from core.profiles import ProfileManager, DEFAULT_PROFILES
-from ui.styles import CYBER_DARK_THEME
+from ui.styles import CYBER_DARK_THEME, THEMES
 from ui.widgets import (
     StatCard,
     SliderSetting,
@@ -50,7 +50,6 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("HP Performance Control Center • i7-1255U")
-        self.setStyleSheet(CYBER_DARK_THEME)
 
         self.telemetry = TelemetryReader()
         self.profile_mgr = ProfileManager()
@@ -63,7 +62,7 @@ class MainWindow(QMainWindow):
         # Track base profile / baseline values for dirty check
         self._applied_settings = dict(self.profile_mgr.get_profile(self.profile_mgr.current_profile_key))
 
-        # Restore window geometry from QSettings
+        # Restore window geometry and theme from QSettings
         self.settings = QSettings("HPControl", "ControlCenter")
         geometry = self.settings.value("geometry")
         if geometry:
@@ -71,7 +70,13 @@ class MainWindow(QMainWindow):
         else:
             self.resize(880, 840)
 
+        saved_theme = self.settings.value("theme", "Cyberpunk Dark (Default)")
+        if saved_theme not in THEMES:
+            saved_theme = "Cyberpunk Dark (Default)"
+        self.current_theme = saved_theme
+
         self._setup_ui()
+        self._apply_theme(self.current_theme)
         self._setup_tray()
 
         # Telemetry Timer (1 Hz polling)
@@ -113,11 +118,7 @@ class MainWindow(QMainWindow):
 
         # Sidebar Header / Collapse Toggle
         self.btn_collapse = QPushButton("☰  Menu")
-        self.btn_collapse.setStyleSheet(
-            "QPushButton { background: transparent; border: none; font-weight: 800; color: #a0aec0; "
-            "text-align: left; padding: 8px 12px; font-size: 13px; }"
-            "QPushButton:hover { color: #00e5ff; }"
-        )
+        self.btn_collapse.setProperty("class", "MenuCollapseBtn")
         self.btn_collapse.clicked.connect(self._toggle_sidebar)
         sidebar_layout.addWidget(self.btn_collapse)
 
@@ -443,7 +444,7 @@ class MainWindow(QMainWindow):
         c_layout.addWidget(title)
 
         self.cooling_fan_lbl = QLabel("Fan Mode: HP EC Automatic (Hardware Governed)")
-        self.cooling_fan_lbl.setStyleSheet("color: #00e5ff; font-weight: bold;")
+        self.cooling_fan_lbl.setProperty("class", "CoolingFanAccent")
         c_layout.addWidget(self.cooling_fan_lbl)
 
         info = QLabel(
@@ -499,7 +500,9 @@ class MainWindow(QMainWindow):
         theme_lbl = QLabel("Color Theme:")
         theme_lbl.setStyleSheet("font-weight: 600;")
         self.combo_theme = QComboBox()
-        self.combo_theme.addItems(["Cyberpunk Dark (Default)", "Obsidian Neon", "Breeze Dark Native"])
+        self.combo_theme.addItems(list(THEMES.keys()))
+        self.combo_theme.setCurrentText(self.current_theme)
+        self.combo_theme.currentTextChanged.connect(self._on_theme_changed)
         theme_row.addWidget(theme_lbl)
         theme_row.addWidget(self.combo_theme)
         theme_row.addStretch()
@@ -524,7 +527,7 @@ class MainWindow(QMainWindow):
                         "  sudo cp /home/aran/Projects/Github/hp-control-center/daemon/hp-control-daemon.service /etc/systemd/system/\n"
                         "  sudo systemctl daemon-reload\n"
                         "  sudo systemctl enable --now hp-control-daemon")
-        d_cmds.setStyleSheet("background: #0f1218; padding: 10px; border-radius: 6px; font-family: monospace; color: #00e5ff; font-size: 11px;")
+        d_cmds.setProperty("class", "CodeBlock")
         d_layout.addWidget(d_cmds)
 
         layout.addWidget(d_card)
@@ -534,7 +537,6 @@ class MainWindow(QMainWindow):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setFixedHeight(160)
-        self.log_text.setStyleSheet("background-color: #0b0d11; color: #a0aec0; font-family: monospace; font-size: 11px; border: 1px solid #1f2736;")
         self.log_text.setPlainText("HP Control Center v0.2-alpha started.\nPolling sensors every 1000ms.\n")
         self.log_section.add_widget(self.log_text)
         layout.addWidget(self.log_section)
@@ -542,6 +544,41 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         scroll.setWidget(content)
         return scroll
+
+    def _on_theme_changed(self, theme_name: str):
+        if theme_name in THEMES:
+            self.settings.setValue("theme", theme_name)
+            self._apply_theme(theme_name)
+
+    def _apply_theme(self, theme_name: str):
+        self.current_theme = theme_name
+        stylesheet = THEMES.get(theme_name, CYBER_DARK_THEME)
+
+        app = QApplication.instance()
+        if app:
+            app.setStyleSheet(stylesheet)
+        self.setStyleSheet(stylesheet)
+
+        # Repolish widgets with dynamic state/theme classes
+        if hasattr(self, "profile_ctrl"):
+            for btn in self.profile_ctrl.buttons.values():
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
+        if hasattr(self, "nav_buttons") and hasattr(self, "tab_stack"):
+            active_tab = self.tab_stack.currentIndex()
+            self._update_nav_buttons(active_tab)
+        if hasattr(self, "btn_collapse"):
+            self.btn_collapse.style().unpolish(self.btn_collapse)
+            self.btn_collapse.style().polish(self.btn_collapse)
+        if hasattr(self, "cooling_fan_lbl"):
+            self.cooling_fan_lbl.style().unpolish(self.cooling_fan_lbl)
+            self.cooling_fan_lbl.style().polish(self.cooling_fan_lbl)
+        if hasattr(self, "card_power"):
+            for card in [getattr(self, c, None) for c in ["card_power", "card_temp", "card_fan", "card_gpu", "card_pcore", "card_ecore"]]:
+                if card and hasattr(card, "unit_lbl"):
+                    card.unit_lbl.style().unpolish(card.unit_lbl)
+                    card.unit_lbl.style().polish(card.unit_lbl)
+        self.update()
 
     # ==============================================
     # NAVIGATION & SIDEBAR
