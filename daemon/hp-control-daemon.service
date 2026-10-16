@@ -5,7 +5,7 @@ Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /home/aran/Projects/Github/hp-control-center/daemon/service.py
+ExecStart=/usr/bin/hp-control-daemon
 Restart=always
 RestartSec=3
 

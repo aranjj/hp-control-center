@@ -1173,16 +1173,24 @@ class MainWindow(QMainWindow):
 
         # Copyable Commands Header & Action
         cmd_hdr = QHBoxLayout()
-        cmd_info = QLabel("Enable background service (run from project folder):")
+        is_svc_installed = os.path.exists("/usr/lib/systemd/system/hp-control-daemon.service") or os.path.exists("/etc/systemd/system/hp-control-daemon.service")
+        cmd_info_txt = "Enable background service (native package):" if is_svc_installed else "Enable background service:"
+        cmd_info = QLabel(cmd_info_txt)
         cmd_info.setProperty("class", "Footnote")
         cmd_hdr.addWidget(cmd_info)
         cmd_hdr.addStretch()
 
-        daemon_cmds_text = (
-            "sudo cp daemon/hp-control-daemon.service /etc/systemd/system/\n"
-            "sudo systemctl daemon-reload\n"
-            "sudo systemctl enable --now hp-control-daemon"
-        )
+        if is_svc_installed:
+            daemon_cmds_text = "sudo systemctl enable --now hp-control-daemon"
+        else:
+            daemon_cmds_text = (
+                "# If installed via package:\n"
+                "sudo systemctl enable --now hp-control-daemon\n\n"
+                "# Or if running from local source:\n"
+                "sudo cp daemon/hp-control-daemon.service /etc/systemd/system/\n"
+                "sudo systemctl daemon-reload\n"
+                "sudo systemctl enable --now hp-control-daemon"
+            )
 
         self.btn_copy_cmds = QPushButton("Copy Commands")
         self.btn_copy_cmds.setProperty("class", "SecondaryButton")

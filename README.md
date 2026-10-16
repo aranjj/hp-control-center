@@ -40,7 +40,24 @@ Designed to eliminate Intel TDP power decay (forcing 25W sustained indefinitely)
 
 ---
 
-## Quick Start
+## Installation (Arch Linux / CachyOS)
+
+Build and install as a native Arch Linux package with systemd service, desktop launcher, and icons:
+
+```bash
+# 1. Build and install package
+makepkg -si
+
+# 2. Enable and start hardware background daemon
+sudo systemctl enable --now hp-control-daemon
+
+# 3. Launch application
+hp-control-center
+```
+
+---
+
+## Quick Start (Standalone / Non-Package)
 
 ### 1. Test Telemetry via CLI (No Root Needed)
 ```bash

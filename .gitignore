@@ -8,3 +8,9 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# Arch package build artifacts
+*.pkg.tar.zst
+/pkg/
+/src/
+

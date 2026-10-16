@@ -27,6 +27,11 @@ echo "[+] Desktop application launcher and icons installed."
 
 # 3. Prompt or install systemd daemon
 echo ""
+if command -v pacman >/dev/null 2>&1; then
+    echo "Tip: On Arch Linux, you can install as a native package with systemd service included:"
+    echo "  makepkg -si"
+    echo ""
+fi
 echo "To enable the background power-sync daemon (runs as root to defeat EC decay):"
 echo "  sudo cp $SCRIPT_DIR/daemon/hp-control-daemon.service /etc/systemd/system/"
 echo "  sudo systemctl daemon-reload"

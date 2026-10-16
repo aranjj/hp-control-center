@@ -1,0 +1,22 @@
+post_install() {
+    echo ":: HP Performance Control Center installed successfully."
+    echo "::"
+    echo ":: To start and enable the hardware background daemon, run:"
+    echo "::   sudo systemctl enable --now hp-control-daemon"
+    echo "::"
+}
+
+post_upgrade() {
+    if systemctl is-active --quiet hp-control-daemon; then
+        echo ":: Restarting hp-control-daemon..."
+        systemctl restart hp-control-daemon
+    fi
+}
+
+pre_remove() {
+    if systemctl is-active --quiet hp-control-daemon; then
+        echo ":: Stopping hp-control-daemon..."
+        systemctl stop hp-control-daemon
+    fi
+    systemctl disable hp-control-daemon 2>/dev/null || true
+}

@@ -2,7 +2,7 @@
 Categories=System;Settings;HardwareSettings;
 Comment[en_US]=Gaming & Power Tuning for HP 15 i7-1255U
 Comment=Gaming & Power Tuning for HP 15 i7-1255U
-Exec=/usr/bin/python3 /home/aran/Projects/Github/hp-control-center/app.py
+Exec=hp-control-center
 GenericName[en_US]=
 GenericName=
 Icon=hp-control-center
