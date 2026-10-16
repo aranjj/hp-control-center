@@ -25,7 +25,7 @@ DEFAULT_PROFILES = {
         "cpu_governor": "powersave",
         "p_core_max_mhz": 4700,
         "e_core_max_mhz": 3500,
-        "thermal_target_c": 90,
+        "thermal_target_c": 97,
         "use_hardware_tcc": False,
     },
     "balanced": {
@@ -44,7 +44,7 @@ DEFAULT_PROFILES = {
         "cpu_governor": "powersave",
         "p_core_max_mhz": 4700,
         "e_core_max_mhz": 3500,
-        "thermal_target_c": 90,
+        "thermal_target_c": 95,
         "use_hardware_tcc": False,
     },
     "eco_quiet": {

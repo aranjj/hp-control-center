@@ -114,7 +114,7 @@ class DaemonService:
             clamped["active_e_cores"] = int(settings["active_e_cores"])
 
         # 10. Thermal Target
-        raw_target = int(settings.get("thermal_target_c", 90))
+        raw_target = int(settings.get("thermal_target_c", 95))
         clamped["thermal_target_c"] = max(69, min(100, raw_target))
         clamped["use_hardware_tcc"] = bool(settings.get("use_hardware_tcc", False)) and self.tcc_writable
 
@@ -159,7 +159,7 @@ class DaemonService:
 
                 # 8. Hardware TCC offset (if enabled & writable)
                 if s.get("use_hardware_tcc") and self.tcc_writable:
-                    target_c = s.get("thermal_target_c", 90)
+                    target_c = s.get("thermal_target_c", 95)
                     if target_c > 69:
                         self.hw.set_hardware_tcc_offset(target_c)
 
@@ -174,7 +174,7 @@ class DaemonService:
         """
         with self.lock:
             s = self.active_settings
-            target = s.get("thermal_target_c", 90)
+            target = s.get("thermal_target_c", 95)
             use_hw_tcc = s.get("use_hardware_tcc", False) and self.tcc_writable
 
             if target is None or target <= 69:
@@ -285,7 +285,7 @@ class DaemonService:
                         "thermal_status": {
                             "state": self.thermal_state,
                             "effective_pl1_w": self.effective_pl1_w if self.effective_pl1_w is not None else self.active_settings.get("pl1_w", 24.0),
-                            "target_c": self.active_settings.get("thermal_target_c", 90),
+                            "target_c": self.active_settings.get("thermal_target_c", 95),
                             "tcc_writable": self.tcc_writable,
                         },
                     }

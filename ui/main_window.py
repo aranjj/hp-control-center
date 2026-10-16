@@ -601,7 +601,7 @@ class MainWindow(QMainWindow):
         title_therm.setProperty("class", "SectionTitle")
         grid_therm.addWidget(title_therm, 0, 0, 1, 3)
 
-        self.slider_thermal = ThermalSliderSetting("Throttle at", default_val=90, label_width=LABEL_COL_WIDTH)
+        self.slider_thermal = ThermalSliderSetting("Throttle at", default_val=95, label_width=LABEL_COL_WIDTH)
         self.slider_thermal.valueChanged.connect(self._on_setting_modified)
         self.slider_thermal.add_to_grid(grid_therm, 1)
 
@@ -1463,7 +1463,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "slider_e_cores"):
             self.slider_e_cores.set_value(prof.get("active_e_cores", len(det["e_cpus"])))
         if hasattr(self, "slider_thermal"):
-            self.slider_thermal.set_value(prof.get("thermal_target_c", 90))
+            t_target = prof.get("thermal_target_c", 95)
+            self.slider_thermal.default_val = t_target
+            self.slider_thermal.btn_reset.setToolTip(f"Reset to default ({t_target}°C)")
+            self.slider_thermal.set_value(t_target)
         if hasattr(self, "chk_hardware_tcc"):
             self.chk_hardware_tcc.setChecked(prof.get("use_hardware_tcc", False))
 
