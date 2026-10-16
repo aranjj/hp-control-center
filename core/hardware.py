@@ -23,8 +23,46 @@ MSR_PKG_POWER_LIMIT = 0x610
 MCHBAR_RAPL_OFFSET = 0x59A0
 MCHBAR_MASK = 0x00007FFFFFE0000  # Alder Lake Host Bridge 0x4601 mask
 
-# GPU Driver sysfs path for Intel Xe driver
-XE_GPU_PATH = "/sys/bus/pci/devices/0000:00:02.0/tile0/gt0/freq0"
+def discover_xe_gpu_path() -> str:
+    """Discovers the Intel Xe / i915 GPU sysfs frequency control path dynamically."""
+    candidates = (
+        glob.glob("/sys/bus/pci/drivers/xe/*/tile0/gt0/freq0") +
+        glob.glob("/sys/bus/pci/drivers/xe/*/gt0/freq0") +
+        glob.glob("/sys/class/drm/card*/device/tile0/gt0/freq0") +
+        glob.glob("/sys/bus/pci/devices/*/tile0/gt0/freq0") +
+        glob.glob("/sys/bus/pci/devices/0000:00:02.0/tile0/gt0/freq0")
+    )
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return "/sys/bus/pci/devices/0000:00:02.0/tile0/gt0/freq0"
+
+
+def get_gpu_hardware_limits() -> tuple[int, int]:
+    """Returns (min_mhz, max_mhz) dynamically read from GPU driver sysfs."""
+    min_mhz = 100
+    max_mhz = 1250
+    p = discover_xe_gpu_path()
+    if p and os.path.exists(p):
+        rp0 = os.path.join(p, "rp0_freq")
+        rpn = os.path.join(p, "rpn_freq")
+        if os.path.exists(rp0):
+            try:
+                with open(rp0, "r") as f:
+                    max_mhz = int(f.read().strip())
+            except Exception:
+                pass
+        if os.path.exists(rpn):
+            try:
+                with open(rpn, "r") as f:
+                    min_mhz = int(f.read().strip())
+            except Exception:
+                pass
+    return min_mhz, max_mhz
+
+
+# GPU Driver sysfs path for Intel Xe driver (dynamically resolved)
+XE_GPU_PATH = discover_xe_gpu_path()
 INTEL_TURBO_PATH = "/sys/devices/system/cpu/intel_pstate/no_turbo"
 
 

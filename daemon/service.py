@@ -16,20 +16,21 @@ import threading
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from core.hardware import HardwareController, get_cpu_topology_info
+from core.hardware import HardwareController, get_cpu_topology_info, get_gpu_hardware_limits
 from core.telemetry import TelemetryReader
 from core.profiles import DEFAULT_PROFILES
 
 SOCKET_PATH = "/tmp/hp_control_center.sock"
 
-# Hardware Safety Constraints for i7-1255U & HP 15 Chassis
+# Hardware Safety Constraints
+_gpu_min, _gpu_max = get_gpu_hardware_limits()
 HARDWARE_LIMITS = {
     "pl1_min_w": 10.0,
     "pl1_max_w": 30.0,
     "pl2_min_w": 10.0,
     "pl2_max_w": 45.0,
-    "gpu_min_mhz": 100,
-    "gpu_max_mhz": 1250,
+    "gpu_min_mhz": _gpu_min,
+    "gpu_max_mhz": _gpu_max,
     "valid_epp": ["performance", "balance_performance", "balance_power", "power", "default"],
     "valid_gpu_modes": ["base", "power_saving"],
 }

@@ -2,7 +2,7 @@
 pkgname=hp-control-center
 pkgver=0.2.0
 pkgrel=1
-pkgdesc="Performance, power & thermal control center for HP laptops (i7-1255U & Intel Arc/Iris Xe)"
+pkgdesc="Performance, power & thermal control center for HP laptops (Intel Core & Core Ultra / Arc / Iris Xe)"
 arch=('any')
 url="https://github.com/aran/hp-control-center"
 license=('GPL-3.0-or-later')

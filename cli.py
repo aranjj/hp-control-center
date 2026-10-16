@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from core.telemetry import TelemetryReader
 from core.profiles import DEFAULT_PROFILES
+from core.sysinfo import get_cpu_display_names, get_gpu_display_names
 
 SOCKET_PATH = "/tmp/hp_control_center.sock"
 
@@ -40,14 +41,17 @@ def send_daemon_cmd(cmd_dict):
 def show_status():
     t = TelemetryReader()
     data = t.get_all()
+    _, cpu_short = get_cpu_display_names()
+    _, gpu_short = get_gpu_display_names()
+    gpu_label = f"{gpu_short} GPU Clock" if gpu_short != "GPU" else "GPU Clock"
 
     print("=" * 55)
-    print(" ⚡ HP 15 PERFORMANCE STATUS (Intel i7-1255U)")
+    print(f" ⚡ PERFORMANCE STATUS ({cpu_short})")
     print("=" * 55)
     print(f" Package Power:      {data['power_watts']} W")
     print(f" Package Temp:       {data['temp_c']} °C")
     print(f" Cooling Fan:        {data['fan_rpm']} RPM")
-    print(f" Iris Xe GPU Clock:  {data['gpu']['act_mhz']} MHz (Min: {data['gpu']['min_mhz']}, Max: {data['gpu']['max_mhz']})")
+    print(f" {gpu_label:19}: {data['gpu']['act_mhz']} MHz (Min: {data['gpu']['min_mhz']}, Max: {data['gpu']['max_mhz']})")
     print(f" GPU Throttling:     {data['gpu']['throttle_reasons'].upper()}")
     print(f" CPU Clocks:         P-Cores: {data['cpu_freq']['p_core_mhz']} MHz | E-Cores: {data['cpu_freq']['e_core_mhz']} MHz")
     print(f" Power Source:       {'AC Connected' if data['ac_connected'] else 'On Battery'}")

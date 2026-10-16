@@ -38,8 +38,8 @@ from PySide6.QtGui import QIcon, QColor
 from core.telemetry import TelemetryReader
 from core.profiles import ProfileManager
 from core.display import DisplayManager
-from core.sysinfo import SystemInfoReader
-from core.hardware import get_cpu_topology_info, get_core_topology_details
+from core.sysinfo import SystemInfoReader, get_cpu_display_names, get_gpu_display_names
+from core.hardware import get_cpu_topology_info, get_core_topology_details, get_gpu_hardware_limits
 from ui.styles import (
     STATUS_OK,
     STATUS_WARN,
@@ -74,7 +74,8 @@ COMBO_WIDTH = 260
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME} - i7-1255U")
+        _, cpu_short = get_cpu_display_names()
+        self.setWindowTitle(f"{APP_NAME} - {cpu_short}")
 
         self.telemetry = TelemetryReader()
         self.profile_mgr = ProfileManager()
@@ -350,8 +351,11 @@ class MainWindow(QMainWindow):
         self.card_fan = StatCard("Cooling Fan", "--", "RPM", "Automatic EC Control", min_floor=0.0, max_floor=4000.0, accent_color="#06b6d4")
         hud_grid.addWidget(self.card_fan, 0, 2)
 
-        # Tile 4: Iris Xe Clock
-        self.card_gpu = StatCard("Iris Xe Clock", "--", "MHz", "State: Active", min_floor=0.0, max_floor=1250.0, accent_color="#a855f7")
+        # Tile 4: GPU Clock
+        _, gpu_short = get_gpu_display_names()
+        _, gpu_hw_max = get_gpu_hardware_limits()
+        gpu_card_title = f"{gpu_short} Clock" if gpu_short != "GPU" else "GPU Clock"
+        self.card_gpu = StatCard(gpu_card_title, "--", "MHz", "State: Active", min_floor=0.0, max_floor=float(gpu_hw_max), accent_color="#a855f7")
         hud_grid.addWidget(self.card_gpu, 1, 0)
 
         # Tile 5: P-Core avg clock
@@ -717,7 +721,9 @@ class MainWindow(QMainWindow):
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(2, 0)
 
-        title = QLabel("Intel Iris Xe Graphics Tuning (Linux xe driver)")
+        gpu_full, _ = get_gpu_display_names()
+        drv = self.sysinfo_reader.get_graphics_info().get("kernel_driver", "xe")
+        title = QLabel(f"{gpu_full} Tuning (Linux {drv} driver)")
         title.setProperty("class", "SectionTitle")
         grid.addWidget(title, 0, 0, 1, 3)
 
@@ -725,11 +731,12 @@ class MainWindow(QMainWindow):
         desc.setProperty("class", "Footnote")
         grid.addWidget(desc, 1, 0, 1, 3)
 
-        self.slider_gpu_min = SliderSetting("Minimum GPU Frequency", 100, 1250, 800, "MHz", label_width=LABEL_COL_WIDTH)
+        gpu_min, gpu_max = get_gpu_hardware_limits()
+        self.slider_gpu_min = SliderSetting("Minimum GPU Frequency", gpu_min, gpu_max, min(800, gpu_max), "MHz", label_width=LABEL_COL_WIDTH)
         self.slider_gpu_min.valueChanged.connect(self._on_setting_modified)
         self.slider_gpu_min.add_to_grid(grid, 2)
 
-        self.slider_gpu_max = SliderSetting("Maximum GPU Frequency", 100, 1250, 1250, "MHz", label_width=LABEL_COL_WIDTH)
+        self.slider_gpu_max = SliderSetting("Maximum GPU Frequency", gpu_min, gpu_max, gpu_max, "MHz", label_width=LABEL_COL_WIDTH)
         self.slider_gpu_max.valueChanged.connect(self._on_setting_modified)
         self.slider_gpu_max.add_to_grid(grid, 3)
 

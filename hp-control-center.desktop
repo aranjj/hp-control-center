@@ -1,7 +1,7 @@
 [Desktop Entry]
 Categories=System;Settings;HardwareSettings;
-Comment[en_US]=Gaming & Power Tuning for HP 15 i7-1255U
-Comment=Gaming & Power Tuning for HP 15 i7-1255U
+Comment[en_US]=Gaming & Power Tuning for HP Intel Laptops
+Comment=Gaming & Power Tuning for HP Intel Laptops
 Exec=hp-control-center
 GenericName[en_US]=
 GenericName=

@@ -8,9 +8,80 @@ Gathers detailed diagnostics for:
 
 import os
 import re
+import glob
 import platform
 import subprocess
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
+
+
+def get_cpu_display_names() -> Tuple[str, str]:
+    """Returns (full_cpu_name, short_cpu_name).
+    Example: ('12th Gen Intel(R) Core(TM) i7-1255U', 'Core i7-1255U')
+    or ('Intel(R) Core(TM) Ultra 7 258V', 'Core Ultra 7 258V').
+    """
+    model = "Intel Processor"
+    try:
+        if os.path.exists("/proc/cpuinfo"):
+            with open("/proc/cpuinfo", "r") as f:
+                for line in f:
+                    if "model name" in line:
+                        model = line.split(":", 1)[1].strip()
+                        break
+    except Exception:
+        pass
+
+    short = model
+    short = re.sub(r"\b\d+(?:st|nd|rd|th)\s+Gen\s+", "", short)
+    short = short.replace("Intel(R)", "").replace("Core(TM)", "Core").replace("Ultra(TM)", "Ultra").strip()
+    short = re.sub(r"\s+", " ", short)
+    if not short:
+        short = "Intel CPU"
+    return model, short
+
+
+def get_gpu_display_names() -> Tuple[str, str]:
+    """Returns (full_gpu_name, short_gpu_name).
+    Example: ('Intel Iris Xe Graphics', 'Iris Xe')
+    or ('Intel Arc 140V Graphics', 'Arc 140V')
+    or ('Intel Arc A370M Graphics', 'Arc A370M')
+    or ('Intel UHD Graphics', 'UHD Graphics').
+    """
+    name = "Intel Graphics"
+    short = "GPU"
+    # Try vulkaninfo first if available
+    try:
+        vk = subprocess.run(["vulkaninfo", "--summary"], capture_output=True, text=True, timeout=2).stdout
+        dev_m = re.search(r"deviceName\s*=\s*(.+)", vk)
+        if dev_m:
+            raw = dev_m.group(1).strip()
+            clean = raw.replace("(R)", "").replace("(TM)", "").strip()
+            clean_short = re.sub(r"\s*\([^)]*\)", "", clean).replace("Intel", "").replace("Graphics", "").strip()
+            clean_short = re.sub(r"\s+", " ", clean_short)
+            name = clean
+            short = clean_short if clean_short else "GPU"
+            return name, short
+    except Exception:
+        pass
+
+    # Try lspci inspection
+    try:
+        out = subprocess.run(["lspci", "-nn"], capture_output=True, text=True, timeout=2).stdout
+        for line in out.splitlines():
+            if any(k in line.lower() for k in ["vga compatible", "3d controller", "display controller"]) and "intel" in line.lower():
+                brackets = re.findall(r"\[([^\]]+)\]", line)
+                if brackets:
+                    for b in brackets:
+                        if any(g in b.lower() for g in ["arc", "iris", "uhd", "graphics"]):
+                            name = f"Intel {b}"
+                            clean_short = re.sub(r"\s*\([^)]*\)", "", b).replace("Graphics", "").strip()
+                            clean_short = re.sub(r"\s+", " ", clean_short)
+                            short = clean_short if clean_short else "GPU"
+                            return name, short
+                break
+    except Exception:
+        pass
+
+    return name, short
 
 
 class SystemInfoReader:
@@ -29,20 +100,15 @@ class SystemInfoReader:
     def get_dmi_info(self) -> Dict[str, str]:
         base = "/sys/devices/virtual/dmi/id"
         return {
-            "product_name": self._read_file(f"{base}/product_name", "HP Laptop 15-fd0xxx"),
-            "sys_vendor": self._read_file(f"{base}/sys_vendor", "HP"),
-            "bios_version": self._read_file(f"{base}/bios_version", "F.26"),
+            "product_name": self._read_file(f"{base}/product_name", "Laptop"),
+            "sys_vendor": self._read_file(f"{base}/sys_vendor", "Generic"),
+            "bios_version": self._read_file(f"{base}/bios_version", "Unknown"),
             "bios_date": self._read_file(f"{base}/bios_date", "N/A"),
             "board_name": self._read_file(f"{base}/board_name", "N/A"),
         }
 
     def get_cpu_info(self) -> Dict[str, Any]:
-        model = "Intel(R) Core(TM) i7-1255U"
-        cpuinfo = self._read_file("/proc/cpuinfo", "")
-        for line in cpuinfo.splitlines():
-            if "model name" in line:
-                model = line.split(":", 1)[1].strip()
-                break
+        model, _ = get_cpu_display_names()
 
         # Discover core topology
         p_cores = 0
@@ -101,11 +167,21 @@ class SystemInfoReader:
         return "16.0 GB"
 
     def get_graphics_info(self) -> Dict[str, str]:
+        gpu_full, _ = get_gpu_display_names()
+        # Discover Intel GPU PCI path dynamically
+        pci_candidates = (
+            glob.glob("/sys/bus/pci/drivers/xe/*") +
+            glob.glob("/sys/bus/pci/drivers/i915/*") +
+            ["/sys/bus/pci/devices/0000:00:02.0"]
+        )
+        pci_dir = next((c for c in pci_candidates if os.path.exists(f"{c}/driver")), "/sys/bus/pci/devices/0000:00:02.0")
+        pci_id_str = os.path.basename(pci_dir)
+
         info = {
-            "device_name": "Intel(R) Iris(R) Xe Graphics (ADL GT2)",
+            "device_name": gpu_full,
             "kernel_driver": "xe",
             "kernel_modules": "xe, i915",
-            "pci_id": "0000:00:02.0 (8086:46a8)",
+            "pci_id": pci_id_str,
             "mesa_version": "Unknown",
             "vulkan_api": "Unknown",
             "vulkan_driver": "Unknown",
@@ -113,7 +189,7 @@ class SystemInfoReader:
         }
 
         # Check kernel driver in use via sysfs
-        driver_symlink = "/sys/bus/pci/devices/0000:00:02.0/driver"
+        driver_symlink = f"{pci_dir}/driver"
         if os.path.exists(driver_symlink):
             try:
                 info["kernel_driver"] = os.path.basename(os.readlink(driver_symlink))

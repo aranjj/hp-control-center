@@ -64,10 +64,15 @@ class TelemetryReader:
         return candidates[0] if candidates else None
 
     def _discover_gpu(self) -> str | None:
-        # Check Intel Xe driver first, then standard i915
-        candidates = glob.glob("/sys/bus/pci/devices/0000:00:02.0/tile0/gt0/freq0") + \
-                     glob.glob("/sys/bus/pci/devices/*/tile0/gt0/freq0") + \
-                     glob.glob("/sys/class/drm/card0/gt")
+        # Check Intel Xe driver first, then standard i915 and drm
+        candidates = (
+            glob.glob("/sys/bus/pci/drivers/xe/*/tile0/gt0/freq0") +
+            glob.glob("/sys/bus/pci/drivers/xe/*/gt0/freq0") +
+            glob.glob("/sys/class/drm/card*/device/tile0/gt0/freq0") +
+            glob.glob("/sys/bus/pci/devices/*/tile0/gt0/freq0") +
+            glob.glob("/sys/bus/pci/devices/0000:00:02.0/tile0/gt0/freq0") +
+            glob.glob("/sys/class/drm/card0/gt")
+        )
         return candidates[0] if candidates else None
 
     def _discover_fans(self) -> list[str]:
