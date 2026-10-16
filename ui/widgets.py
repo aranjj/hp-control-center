@@ -378,6 +378,7 @@ class SegmentedControl(QFrame):
             btn.setCheckable(True)
             btn.setProperty("profileKey", key)
             btn.setProperty("class", "SegmentBtn")
+            btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(lambda checked, k=key: self._on_btn_clicked(k))
             self.buttons[key] = btn
             self.layout.addWidget(btn)
@@ -391,6 +392,7 @@ class SegmentedControl(QFrame):
             btn.setChecked(k == key)
             btn.style().unpolish(btn)
             btn.style().polish(btn)
+        self.updateGeometry()
 
 
 class RevertCountdownDialog(QDialog):

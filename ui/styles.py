@@ -106,16 +106,16 @@ QFrame.SegmentedControlFrame {
     background-color: palette(base);
     border: 1px solid palette(mid);
     border-radius: 8px;
-    padding: 3px;
+    padding: 2px;
 }
 
 QPushButton.SegmentBtn {
     background-color: transparent;
-    border: none;
+    border: 1px solid transparent;
     border-radius: 6px;
     color: palette(window-text);
     font-weight: 600;
-    padding: 8px 14px;
+    padding: 6px 16px;
     font-size: 12px;
 }
 QPushButton.SegmentBtn:hover {
@@ -125,7 +125,7 @@ QPushButton.SegmentBtn:hover {
 QPushButton.SegmentBtn:checked {
     background-color: palette(highlight);
     color: palette(highlighted-text);
-    font-weight: bold;
+    font-weight: 600;
     border: 1px solid palette(highlight);
 }
 
