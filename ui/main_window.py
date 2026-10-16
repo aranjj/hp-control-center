@@ -1333,7 +1333,19 @@ class MainWindow(QMainWindow):
 
     def _setup_tray(self):
         self.tray = QSystemTrayIcon(self)
-        self.tray.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
+        app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        icon = QIcon.fromTheme("hp-control-center")
+        if icon.isNull():
+            svg_path = os.path.join(app_dir, "hicolor", "scalable", "apps", "hp-control-center.svg")
+            png_path = os.path.join(app_dir, "hicolor", "256x256", "apps", "hp-control-center.png")
+            if os.path.exists(svg_path):
+                icon = QIcon(svg_path)
+            elif os.path.exists(png_path):
+                icon = QIcon(png_path)
+            else:
+                icon = self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon)
+        self.setWindowIcon(icon)
+        self.tray.setIcon(icon)
 
         tray_menu = QMenu()
         act_gaming = tray_menu.addAction("🚀 Ultra Gaming (25W)")
