@@ -28,12 +28,17 @@ from PySide6.QtWidgets import (
     QApplication,
     QTextEdit,
     QMessageBox,
+    QLineEdit,
+    QFileDialog,
+    QSlider,
 )
 from PySide6.QtCore import Qt, QTimer, QSettings
 from PySide6.QtGui import QIcon
 
 from core.telemetry import TelemetryReader
 from core.profiles import ProfileManager, DEFAULT_PROFILES
+from core.display import DisplayManager
+from core.sysinfo import SystemInfoReader
 from ui.styles import CYBER_DARK_THEME, THEMES
 from ui.widgets import (
     StatCard,
@@ -53,6 +58,8 @@ class MainWindow(QMainWindow):
 
         self.telemetry = TelemetryReader()
         self.profile_mgr = ProfileManager()
+        self.display_mgr = DisplayManager()
+        self.sysinfo_reader = SystemInfoReader()
         self.daemon_online = False
         self.unsaved_changes_count = 0
         self.sidebar_expanded = True
@@ -134,7 +141,9 @@ class MainWindow(QMainWindow):
             ("📊", "Dashboard"),
             ("⚡", "Performance"),
             ("🎮", "Graphics"),
+            ("🖥️", "Display"),
             ("❄️", "Cooling"),
+            ("ℹ️", "System Info"),
             ("⚙️", "Settings"),
         ]
         for idx, (icon, text) in enumerate(nav_items):
@@ -212,9 +221,13 @@ class MainWindow(QMainWindow):
         self.tab_stack.addWidget(self._build_performance_tab())
         # Tab 2: Graphics
         self.tab_stack.addWidget(self._build_graphics_tab())
-        # Tab 3: Cooling
+        # Tab 3: Display
+        self.tab_stack.addWidget(self._build_display_tab())
+        # Tab 4: Cooling
         self.tab_stack.addWidget(self._build_cooling_tab())
-        # Tab 4: Settings
+        # Tab 5: System Info
+        self.tab_stack.addWidget(self._build_sysinfo_tab())
+        # Tab 6: Settings
         self.tab_stack.addWidget(self._build_settings_tab())
 
         content_layout.addWidget(self.tab_stack, stretch=1)
@@ -428,6 +441,234 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         return scroll
 
+    def _build_display_tab(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 4, 10, 0)
+        layout.setSpacing(14)
+
+        disp_state = self.display_mgr.get_display_state()
+        self._disp_output_name = disp_state["output_name"] if disp_state else "eDP-1"
+
+        # Card 1: Display Output & Modes
+        card_modes = QFrame()
+        card_modes.setProperty("class", "CardFrame")
+        c1_layout = QVBoxLayout(card_modes)
+        c1_layout.setSpacing(12)
+
+        c1_title = QLabel("🖥️ Display Resolution, Refresh Rate & Scaling")
+        c1_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        c1_layout.addWidget(c1_title)
+
+        panel_info = QLabel(f"Panel: {self._disp_output_name} (Active Laptop Display)")
+        panel_info.setStyleSheet("color: #718096; font-size: 12px; font-weight: 500;")
+        c1_layout.addWidget(panel_info)
+
+        # Mode row
+        mode_row = QHBoxLayout()
+        mode_lbl = QLabel("Resolution & Refresh Rate:")
+        mode_lbl.setStyleSheet("font-weight: 600; min-width: 170px;")
+        self.combo_disp_mode = QComboBox()
+        self.combo_disp_mode.setMinimumWidth(220)
+
+        current_idx = 0
+        if disp_state and disp_state.get("modes"):
+            for idx, m in enumerate(disp_state["modes"]):
+                self.combo_disp_mode.addItem(m["label"], m["id"])
+                if m.get("is_current"):
+                    current_idx = idx
+            self.combo_disp_mode.setCurrentIndex(current_idx)
+
+        btn_apply_mode = QPushButton("Apply Mode")
+        btn_apply_mode.setProperty("class", "SecondaryButton")
+        btn_apply_mode.clicked.connect(self._on_apply_disp_mode)
+
+        mode_row.addWidget(mode_lbl)
+        mode_row.addWidget(self.combo_disp_mode)
+        mode_row.addWidget(btn_apply_mode)
+        mode_row.addStretch()
+        c1_layout.addLayout(mode_row)
+
+        # Scale row
+        scale_row = QHBoxLayout()
+        scale_lbl = QLabel("Display Scale Factor:")
+        scale_lbl.setStyleSheet("font-weight: 600; min-width: 170px;")
+        self.combo_disp_scale = QComboBox()
+        self.combo_disp_scale.setMinimumWidth(220)
+        scale_options = [("100% (Native 1.0x)", 1.0), ("125% (1.25x)", 1.25), ("150% (1.50x)", 1.5)]
+        current_scale = disp_state.get("scale", 1.0) if disp_state else 1.0
+        cur_s_idx = 0
+        for s_idx, (s_lbl, s_val) in enumerate(scale_options):
+            self.combo_disp_scale.addItem(s_lbl, s_val)
+            if abs(s_val - current_scale) < 0.05:
+                cur_s_idx = s_idx
+        self.combo_disp_scale.setCurrentIndex(cur_s_idx)
+
+        btn_apply_scale = QPushButton("Apply Scale")
+        btn_apply_scale.setProperty("class", "SecondaryButton")
+        btn_apply_scale.clicked.connect(self._on_apply_disp_scale)
+
+        scale_row.addWidget(scale_lbl)
+        scale_row.addWidget(self.combo_disp_scale)
+        scale_row.addWidget(btn_apply_scale)
+        scale_row.addStretch()
+        c1_layout.addLayout(scale_row)
+
+        layout.addWidget(card_modes)
+
+        # Card 2: Brightness Control
+        card_bright = QFrame()
+        card_bright.setProperty("class", "CardFrame")
+        c2_layout = QVBoxLayout(card_bright)
+        c2_layout.setSpacing(10)
+
+        c2_title = QLabel("☀️ Panel Brightness")
+        c2_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        c2_layout.addWidget(c2_title)
+
+        bright_row = QHBoxLayout()
+        self.slider_bright = QSlider(Qt.Horizontal)
+        self.slider_bright.setRange(0, 100)
+        init_bright = disp_state.get("brightness", 100) if disp_state else 100
+        self.slider_bright.setValue(init_bright)
+
+        self.lbl_bright_val = QLabel(f"{init_bright} %")
+        self.lbl_bright_val.setStyleSheet("font-weight: bold; min-width: 45px;")
+        self.slider_bright.valueChanged.connect(self._on_disp_brightness_slider_changed)
+
+        bright_row.addWidget(self.slider_bright)
+        bright_row.addWidget(self.lbl_bright_val)
+        c2_layout.addLayout(bright_row)
+        layout.addWidget(card_bright)
+
+        # Card 3: Color Range & VRR
+        card_color = QFrame()
+        card_color.setProperty("class", "CardFrame")
+        c3_layout = QVBoxLayout(card_color)
+        c3_layout.setSpacing(12)
+
+        c3_title = QLabel("🎨 Advanced Color Range & VRR")
+        c3_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        c3_layout.addWidget(c3_title)
+
+        # RGB Dynamic Range
+        rgb_row = QHBoxLayout()
+        rgb_lbl = QLabel("RGB Dynamic Range:")
+        rgb_lbl.setStyleSheet("font-weight: 600; min-width: 170px;")
+        self.combo_rgb = QComboBox()
+        self.combo_rgb.setMinimumWidth(220)
+        self.combo_rgb.addItem("Automatic (Recommended)", "automatic")
+        self.combo_rgb.addItem("Full Dynamic Range (0-255)", "full")
+        self.combo_rgb.addItem("Limited Range (16-235)", "limited")
+        cur_rgb = disp_state.get("rgb_range", "automatic") if disp_state else "automatic"
+        if cur_rgb == "full":
+            self.combo_rgb.setCurrentIndex(1)
+        elif cur_rgb == "limited":
+            self.combo_rgb.setCurrentIndex(2)
+        else:
+            self.combo_rgb.setCurrentIndex(0)
+
+        btn_apply_rgb = QPushButton("Apply RGB")
+        btn_apply_rgb.setProperty("class", "SecondaryButton")
+        btn_apply_rgb.clicked.connect(self._on_apply_rgb_range)
+
+        rgb_row.addWidget(rgb_lbl)
+        rgb_row.addWidget(self.combo_rgb)
+        rgb_row.addWidget(btn_apply_rgb)
+        rgb_row.addStretch()
+        c3_layout.addLayout(rgb_row)
+
+        # VRR
+        vrr_row = QHBoxLayout()
+        vrr_lbl = QLabel("Variable Refresh Rate (VRR):")
+        vrr_lbl.setStyleSheet("font-weight: 600; min-width: 170px;")
+        self.combo_vrr = QComboBox()
+        self.combo_vrr.setMinimumWidth(220)
+        self.combo_vrr.addItem("Automatic", "automatic")
+        self.combo_vrr.addItem("Always Enabled", "always")
+        self.combo_vrr.addItem("Never (Disabled)", "never")
+
+        vrr_capable = disp_state.get("vrr_capable", False) if disp_state else False
+        btn_apply_vrr = QPushButton("Apply VRR")
+        btn_apply_vrr.setProperty("class", "SecondaryButton")
+        btn_apply_vrr.clicked.connect(self._on_apply_vrr)
+
+        vrr_row.addWidget(vrr_lbl)
+        vrr_row.addWidget(self.combo_vrr)
+        vrr_row.addWidget(btn_apply_vrr)
+        vrr_row.addStretch()
+        c3_layout.addLayout(vrr_row)
+
+        if not vrr_capable:
+            self.combo_vrr.setEnabled(False)
+            btn_apply_vrr.setEnabled(False)
+            vrr_note = QLabel("ℹ️ VRR / Adaptive Sync is not supported by the internal eDP panel. Supported on compatible external FreeSync/G-Sync displays via DP/HDMI.")
+            vrr_note.setStyleSheet("color: #718096; font-size: 11px; font-style: italic;")
+            c3_layout.addWidget(vrr_note)
+
+        layout.addWidget(card_color)
+
+        # Card 4: Color Profile (ICC)
+        card_icc = QFrame()
+        card_icc.setProperty("class", "CardFrame")
+        c4_layout = QVBoxLayout(card_icc)
+        c4_layout.setSpacing(10)
+
+        c4_title = QLabel("📄 ICC Color Profile")
+        c4_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        c4_layout.addWidget(c4_title)
+
+        icc_source_row = QHBoxLayout()
+        icc_lbl = QLabel("Profile Source:")
+        icc_lbl.setStyleSheet("font-weight: 600; min-width: 170px;")
+        self.combo_icc_source = QComboBox()
+        self.combo_icc_source.setMinimumWidth(220)
+        self.combo_icc_source.addItem("EDID Native Panel Curve", "EDID")
+        self.combo_icc_source.addItem("Standard sRGB", "sRGB")
+        self.combo_icc_source.addItem("Custom ICC Profile", "ICC")
+        self.combo_icc_source.currentIndexChanged.connect(self._on_icc_source_changed)
+
+        btn_apply_icc_source = QPushButton("Apply Source")
+        btn_apply_icc_source.setProperty("class", "SecondaryButton")
+        btn_apply_icc_source.clicked.connect(self._on_apply_icc_source)
+
+        icc_source_row.addWidget(icc_lbl)
+        icc_source_row.addWidget(self.combo_icc_source)
+        icc_source_row.addWidget(btn_apply_icc_source)
+        icc_source_row.addStretch()
+        c4_layout.addLayout(icc_source_row)
+
+        # Custom ICC Path row
+        self.icc_file_row = QHBoxLayout()
+        self.txt_icc_path = QLineEdit()
+        self.txt_icc_path.setPlaceholderText("Select custom .icc / .icm profile file...")
+        self.txt_icc_path.setEnabled(False)
+        if disp_state and disp_state.get("icc_profile"):
+            self.txt_icc_path.setText(disp_state["icc_profile"])
+            self.txt_icc_path.setEnabled(True)
+            self.combo_icc_source.setCurrentIndex(2)
+
+        btn_browse_icc = QPushButton("📁 Browse...")
+        btn_browse_icc.setProperty("class", "SecondaryButton")
+        btn_browse_icc.clicked.connect(self._browse_icc_file)
+
+        btn_apply_custom_icc = QPushButton("Load ICC")
+        btn_apply_custom_icc.setProperty("class", "SecondaryButton")
+        btn_apply_custom_icc.clicked.connect(self._on_apply_custom_icc)
+
+        self.icc_file_row.addWidget(self.txt_icc_path)
+        self.icc_file_row.addWidget(btn_browse_icc)
+        self.icc_file_row.addWidget(btn_apply_custom_icc)
+        c4_layout.addLayout(self.icc_file_row)
+
+        layout.addWidget(card_icc)
+
+        layout.addStretch()
+        scroll.setWidget(content)
+        return scroll
+
     def _build_cooling_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -471,6 +712,174 @@ class MainWindow(QMainWindow):
         layout.addWidget(card)
         layout.addStretch()
         return widget
+
+    def _build_sysinfo_tab(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 4, 10, 0)
+        layout.setSpacing(14)
+
+        # Header with Copy Button
+        header_row = QHBoxLayout()
+        title_box = QVBoxLayout()
+        s_title = QLabel("ℹ️ System & Hardware Diagnostics")
+        s_title.setStyleSheet("font-size: 15px; font-weight: bold; color: #ffffff;")
+        s_desc = QLabel("Detailed hardware topology, kernel driver, Vulkan, and Mesa stack specifications")
+        s_desc.setStyleSheet("color: #718096; font-size: 12px;")
+        title_box.addWidget(s_title)
+        title_box.addWidget(s_desc)
+        header_row.addLayout(title_box)
+        header_row.addStretch()
+
+        btn_copy_report = QPushButton("📋 Copy System Report")
+        btn_copy_report.setProperty("class", "ApplyButton")
+        btn_copy_report.clicked.connect(lambda: self._copy_to_clipboard(
+            self.sysinfo_reader.generate_markdown_report(), btn_copy_report
+        ))
+        header_row.addWidget(btn_copy_report)
+        layout.addLayout(header_row)
+
+        dmi = self.sysinfo_reader.get_dmi_info()
+        cpu = self.sysinfo_reader.get_cpu_info()
+        gpu = self.sysinfo_reader.get_graphics_info()
+        os_info = self.sysinfo_reader.get_os_info()
+        mem = self.sysinfo_reader.get_memory_info()
+
+        # Card 1: Graphics & Drivers Stack
+        card_gpu = QFrame()
+        card_gpu.setProperty("class", "CardFrame")
+        cg_layout = QVBoxLayout(card_gpu)
+        cg_layout.setSpacing(10)
+
+        cg_title = QLabel("🎮 Graphics & Driver Stack")
+        cg_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        cg_layout.addWidget(cg_title)
+
+        cg_layout.addLayout(self._create_spec_row("Active Kernel Driver:", f"<b>{gpu['kernel_driver']}</b> (Modern Intel Xe KMD)", accent=True))
+        cg_layout.addLayout(self._create_spec_row("Available Kernel Drivers:", gpu['kernel_modules']))
+        cg_layout.addLayout(self._create_spec_row("GPU Device Name:", gpu['device_name']))
+        cg_layout.addLayout(self._create_spec_row("PCI Location / IDs:", gpu['pci_id']))
+        cg_layout.addLayout(self._create_spec_row("Mesa Driver Version:", gpu['mesa_version'], accent=True))
+        cg_layout.addLayout(self._create_spec_row("Vulkan API Support:", f"{gpu['vulkan_api']} ({gpu['vulkan_driver']})"))
+        cg_layout.addLayout(self._create_spec_row("OpenGL Core Profile:", gpu['opengl_version']))
+        layout.addWidget(card_gpu)
+
+        # Card 2: Hardware & Motherboard
+        card_hw = QFrame()
+        card_hw.setProperty("class", "CardFrame")
+        ch_layout = QVBoxLayout(card_hw)
+        ch_layout.setSpacing(10)
+
+        ch_title = QLabel("💻 Hardware & Chassis")
+        ch_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        ch_layout.addWidget(ch_title)
+
+        ch_layout.addLayout(self._create_spec_row("Device Model:", f"{dmi['sys_vendor']} {dmi['product_name']}"))
+        ch_layout.addLayout(self._create_spec_row("BIOS / UEFI Firmware:", f"{dmi['bios_version']} ({dmi['bios_date']})"))
+        ch_layout.addLayout(self._create_spec_row("Processor (CPU):", f"{cpu['model']}"))
+        ch_layout.addLayout(self._create_spec_row("Cores & Threads:", f"<b>{cpu['summary']}</b>", accent=True))
+        ch_layout.addLayout(self._create_spec_row("Total System Memory:", mem))
+        layout.addWidget(card_hw)
+
+        # Card 3: Linux Operating System
+        card_os = QFrame()
+        card_os.setProperty("class", "CardFrame")
+        co_layout = QVBoxLayout(card_os)
+        co_layout.setSpacing(10)
+
+        co_title = QLabel("🐧 Operating System & Environment")
+        co_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        co_layout.addWidget(co_title)
+
+        co_layout.addLayout(self._create_spec_row("Linux Distribution:", os_info['distro']))
+        co_layout.addLayout(self._create_spec_row("Kernel Release:", f"<b>{os_info['kernel']}</b> ({os_info['arch']})", accent=True))
+        co_layout.addLayout(self._create_spec_row("Windowing Session:", os_info['session']))
+        co_layout.addLayout(self._create_spec_row("Thermal Subsystem:", f"{os_info['thermald']} + hp-wmi"))
+        layout.addWidget(card_os)
+
+        layout.addStretch()
+        scroll.setWidget(content)
+        return scroll
+
+    def _create_spec_row(self, label: str, value: str, accent: bool = False) -> QHBoxLayout:
+        row = QHBoxLayout()
+        l_lbl = QLabel(label)
+        l_lbl.setStyleSheet("color: #718096; font-size: 12px; min-width: 180px; font-weight: 500;")
+        v_lbl = QLabel(value)
+        if accent:
+            v_lbl.setProperty("class", "CoolingFanAccent")
+        else:
+            v_lbl.setStyleSheet("color: #ffffff; font-size: 12px;")
+        v_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        row.addWidget(l_lbl)
+        row.addWidget(v_lbl)
+        row.addStretch()
+        return row
+
+    # ==============================================
+    # DISPLAY SETTING HANDLERS
+    # ==============================================
+
+    def _on_apply_disp_mode(self):
+        mode_id = self.combo_disp_mode.currentData()
+        if mode_id:
+            ok = self.display_mgr.set_mode(self._disp_output_name, str(mode_id))
+            if ok:
+                self.log_text.append(f"[Display] Mode switched to {self.combo_disp_mode.currentText()}")
+
+    def _on_apply_disp_scale(self):
+        scale = self.combo_disp_scale.currentData()
+        if scale:
+            ok = self.display_mgr.set_scale(self._disp_output_name, float(scale))
+            if ok:
+                self.log_text.append(f"[Display] Scale switched to {scale}x")
+
+    def _on_disp_brightness_slider_changed(self, val: int):
+        self.lbl_bright_val.setText(f"{val} %")
+        self.display_mgr.set_brightness(self._disp_output_name, val)
+
+    def _on_apply_rgb_range(self):
+        mode = self.combo_rgb.currentData()
+        if mode:
+            ok = self.display_mgr.set_rgb_range(self._disp_output_name, str(mode))
+            if ok:
+                self.log_text.append(f"[Display] RGB Dynamic Range set to {mode}")
+
+    def _on_apply_vrr(self):
+        policy = self.combo_vrr.currentData()
+        if policy:
+            ok = self.display_mgr.set_vrr_policy(self._disp_output_name, str(policy))
+            if ok:
+                self.log_text.append(f"[Display] VRR Policy set to {policy}")
+
+    def _on_icc_source_changed(self, idx: int):
+        is_custom = (idx == 2)
+        self.txt_icc_path.setEnabled(is_custom)
+
+    def _browse_icc_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select ICC Profile", "", "Color Profiles (*.icc *.icm);;All Files (*)"
+        )
+        if path:
+            self.txt_icc_path.setText(path)
+
+    def _on_apply_icc_source(self):
+        src = self.combo_icc_source.currentData()
+        if src in ("sRGB", "EDID"):
+            ok = self.display_mgr.set_color_profile_source(self._disp_output_name, src)
+            if ok:
+                self.log_text.append(f"[Display] Color profile source set to {src}")
+
+    def _on_apply_custom_icc(self):
+        path = self.txt_icc_path.text().strip()
+        if path and os.path.exists(path):
+            ok = self.display_mgr.set_icc_profile(self._disp_output_name, path)
+            if ok:
+                self.log_text.append(f"[Display] Custom ICC profile applied: {path}")
+        else:
+            QMessageBox.warning(self, "Invalid File", "Please select a valid .icc or .icm file.")
 
     def _build_settings_tab(self) -> QWidget:
         scroll = QScrollArea()
@@ -627,8 +1036,8 @@ class MainWindow(QMainWindow):
 
     def _toggle_sidebar(self):
         self.sidebar_expanded = not self.sidebar_expanded
-        nav_texts = ["Dashboard", "Performance", "Graphics", "Cooling", "Settings"]
-        nav_icons = ["📊", "⚡", "🎮", "❄️", "⚙️"]
+        nav_texts = ["Dashboard", "Performance", "Graphics", "Display", "Cooling", "System Info", "Settings"]
+        nav_icons = ["📊", "⚡", "🎮", "🖥️", "❄️", "ℹ️", "⚙️"]
 
         if self.sidebar_expanded:
             self.sidebar_frame.setFixedWidth(200)
