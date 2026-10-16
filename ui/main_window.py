@@ -35,7 +35,13 @@ from PySide6.QtGui import QIcon
 from core.telemetry import TelemetryReader
 from core.profiles import ProfileManager, DEFAULT_PROFILES
 from ui.styles import CYBER_DARK_THEME
-from ui.widgets import StatCard, SliderSetting, CollapsibleSection, SegmentedControl
+from ui.widgets import (
+    StatCard,
+    SliderSetting,
+    CollapsibleSection,
+    SegmentedControl,
+    RevertCountdownDialog,
+)
 
 SOCKET_PATH = "/tmp/hp_control_center.sock"
 
@@ -274,29 +280,29 @@ class MainWindow(QMainWindow):
         hud_grid.setSpacing(12)
 
         # Tile 1: Package Power with Throttle Reason
-        self.card_power = StatCard("Package Power", "0.0", "W", "Target: 25.0 W")
+        self.card_power = StatCard("Package Power", "0.0", "W", "Target: 25.0 W", sparkline_color="#00e5ff")
         hud_grid.addWidget(self.card_power, 0, 0)
 
         # Tile 2: Package Temp
-        self.card_temp = StatCard("Package Temp", "--", "°C", "Thermal: Normal")
+        self.card_temp = StatCard("Package Temp", "--", "°C", "Thermal: Normal", sparkline_color="#ff9100")
         hud_grid.addWidget(self.card_temp, 0, 1)
 
         # Tile 3: Cooling Fan
-        self.card_fan = StatCard("Cooling Fan", "--", "RPM", "HP EC Automatic")
+        self.card_fan = StatCard("Cooling Fan", "--", "RPM", "HP EC Automatic", sparkline_color="#00e676")
         hud_grid.addWidget(self.card_fan, 0, 2)
 
         # Tile 4: Iris Xe Clock
-        self.card_gpu = StatCard("Iris Xe Clock", "--", "MHz", "State: Active")
+        self.card_gpu = StatCard("Iris Xe Clock", "--", "MHz", "State: Active", sparkline_color="#b388ff")
         hud_grid.addWidget(self.card_gpu, 1, 0)
 
         # Tile 5: P-Core avg clock (dynamic threads count)
         p_count = len(self.telemetry.p_core_threads)
-        self.card_pcore = StatCard("P-Cores (Avg)", "--", "GHz", f"{p_count} Threads (cpu0-{p_count-1})")
+        self.card_pcore = StatCard("P-Cores (Avg)", "--", "GHz", f"{p_count} Threads (cpu0-{p_count-1})", sparkline_color="#00b0ff")
         hud_grid.addWidget(self.card_pcore, 1, 1)
 
         # Tile 6: E-Core avg clock (dynamic threads count)
         e_count = len(self.telemetry.e_core_threads)
-        self.card_ecore = StatCard("E-Cores (Avg)", "--", "GHz", f"{e_count} Threads")
+        self.card_ecore = StatCard("E-Cores (Avg)", "--", "GHz", f"{e_count} Threads", sparkline_color="#26c6da")
         hud_grid.addWidget(self.card_ecore, 1, 2)
 
         layout.addLayout(hud_grid)
@@ -695,13 +701,28 @@ class MainWindow(QMainWindow):
         self._load_profile_into_ui("balanced")
 
     def _apply_settings(self):
-        """Sends changes to daemon."""
+        """Sends changes to daemon with a 15-second auto-revert safety countdown."""
+        previous_settings = dict(self._applied_settings)
         settings = self._collect_ui_settings()
+
         resp = self._send_to_daemon({"cmd": "apply", "settings": settings})
         if resp.get("status") == "ok":
-            self._applied_settings = dict(settings)
-            self._recalculate_unsaved_changes()
-            self.log_text.append("[+] Applied settings successfully.")
+            self.log_text.append("[*] Applied limits to hardware. Awaiting confirmation...")
+            dlg = RevertCountdownDialog(timeout_sec=15, parent=self)
+            dlg.exec()
+
+            if dlg.confirmed:
+                self._applied_settings = dict(settings)
+                self._recalculate_unsaved_changes()
+                self.log_text.append("[+] Settings confirmed by user.")
+            else:
+                self.log_text.append("[!] Confirmation timed out or reverted. Restoring previous settings...")
+                self._send_to_daemon({"cmd": "apply", "settings": previous_settings})
+                self._applied_settings = dict(previous_settings)
+                self._load_profile_into_ui(self.profile_mgr.current_profile_key)
+                self.log_text.append("[✓] Restored previous safe settings.")
+        else:
+            self.log_text.append(f"[!] Daemon error: {resp.get('message', 'Failed to apply.')}")
 
     # ==============================================
     # DAEMON COMMUNICATION
@@ -766,12 +787,16 @@ class MainWindow(QMainWindow):
         # Throttle reason on power card
         gpu_th = data["gpu"]["throttle_reasons"].upper()
         th_reason = "NONE" if gpu_th in ("", "NONE") else gpu_th
-        self.card_power.update_value(f"{watts:.1f}", f"Target PL1: {target}.0 W", badge_text=f"THROTTLE: {th_reason}")
+        self.card_power.update_value(
+            f"{watts:.1f}", f"Target PL1: {target}.0 W", badge_text=f"THROTTLE: {th_reason}", numeric_val=watts
+        )
 
         # Temp
         temp = data["temp_c"] if data["temp_c"] is not None else 0
         temp_color = "#00e676" if temp < 70 else ("#ffaa00" if temp < 85 else "#ff3366")
-        self.card_temp.update_value(f"{temp}" if temp else "--", "Core Temp Sensor", color=temp_color)
+        self.card_temp.update_value(
+            f"{temp}" if temp else "--", "Core Temp Sensor", color=temp_color, numeric_val=float(temp)
+        )
 
         # Global High Temp Alert
         if temp >= 90:
@@ -782,20 +807,31 @@ class MainWindow(QMainWindow):
 
         # Fan
         fan_rpm = data["fan_rpm"] if data["fan_rpm"] is not None else 0
-        self.card_fan.update_value(f"{fan_rpm:,}" if fan_rpm > 0 else "--", "HP EC Automatic")
+        self.card_fan.update_value(
+            f"{fan_rpm:,}" if fan_rpm > 0 else "--", "HP EC Automatic", numeric_val=float(fan_rpm)
+        )
 
         # Iris Xe GPU
         gpu = data["gpu"]
         reasons = gpu["throttle_reasons"]
         gpu_color = "#ff3366" if gpu["is_throttling"] else "#ffffff"
-        self.card_gpu.update_value(f"{gpu['act_mhz']}" if gpu['act_mhz'] else "--", f"Reasons: {reasons.upper()}", color=gpu_color)
+        self.card_gpu.update_value(
+            f"{gpu['act_mhz']}" if gpu['act_mhz'] else "--",
+            f"Reasons: {reasons.upper()}",
+            color=gpu_color,
+            numeric_val=float(gpu["act_mhz"] or 0),
+        )
 
         # CPU Clocks
         cpu = data["cpu_freq"]
         p_ghz = (cpu["p_core_mhz"] / 1000.0) if cpu["p_core_mhz"] else 0.0
         e_ghz = (cpu["e_core_mhz"] / 1000.0) if cpu["e_core_mhz"] else 0.0
-        self.card_pcore.update_value(f"{p_ghz:.2f}", f"{cpu['p_threads_count']} Threads Active")
-        self.card_ecore.update_value(f"{e_ghz:.2f}", f"{cpu['e_threads_count']} Threads Active")
+        self.card_pcore.update_value(
+            f"{p_ghz:.2f}", f"{cpu['p_threads_count']} Threads Active", numeric_val=p_ghz
+        )
+        self.card_ecore.update_value(
+            f"{e_ghz:.2f}", f"{cpu['e_threads_count']} Threads Active", numeric_val=e_ghz
+        )
 
         # Power source badge
         if data["ac_connected"]:
@@ -813,6 +849,10 @@ class MainWindow(QMainWindow):
 
         # Mini readout on bottom bar
         self.mini_telemetry_lbl.setText(f"•  {temp}°C  |  {watts:.1f}W  |  {fan_rpm} RPM")
+        if temp >= 90:
+            self.mini_telemetry_lbl.setStyleSheet("color: #ff3366; font-size: 11px; font-weight: bold;")
+        else:
+            self.mini_telemetry_lbl.setStyleSheet("color: #718096; font-size: 11px; font-weight: 500;")
 
         # Tray Tooltip
         self.tray.setToolTip(f"HP Control Center: {watts:.1f}W • {temp}°C • Fan: {fan_rpm} RPM")

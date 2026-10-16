@@ -1,7 +1,14 @@
 """
 Custom UI Widgets for HP Control Center
+Includes:
+- StatCard with live 60-second rolling SparklineWidget
+- SliderSetting with fixed-width editable spinbox & per-slider reset
+- CollapsibleSection container
+- SegmentedControl profile bar
+- RevertCountdownDialog for 15s safety revert
 """
 
+from collections import deque
 from PySide6.QtWidgets import (
     QFrame,
     QVBoxLayout,
@@ -12,20 +19,98 @@ from PySide6.QtWidgets import (
     QPushButton,
     QToolButton,
     QWidget,
+    QDialog,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen, QLinearGradient
+
+
+class SparklineWidget(QWidget):
+    """60-second rolling sparkline graph sampled ~1/sec."""
+
+    def __init__(self, color_hex: str = "#00e5ff", maxlen: int = 60, parent=None):
+        super().__init__(parent)
+        self.color_hex = color_hex
+        self.data = deque(maxlen=maxlen)
+        self.setFixedHeight(34)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def add_point(self, val: float):
+        if val is not None:
+            self.data.append(float(val))
+            self.update()
+
+    def paintEvent(self, event):
+        if len(self.data) < 2:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+        n = len(self.data)
+
+        min_val = min(self.data)
+        max_val = max(self.data)
+        rng = max_val - min_val
+        if rng < 0.001:
+            rng = 1.0  # Avoid division by zero on flat values
+
+        # 4px vertical padding
+        pad = 4.0
+        draw_h = h - (2 * pad)
+
+        step = w / (self.data.maxlen - 1)
+        start_x = w - ((n - 1) * step)
+
+        points = []
+        for i, val in enumerate(self.data):
+            x = start_x + (i * step)
+            norm = (val - min_val) / rng
+            y = pad + draw_h * (1.0 - norm)
+            points.append((x, y))
+
+        # Path for the line
+        line_path = QPainterPath()
+        line_path.moveTo(points[0][0], points[0][1])
+        for x, y in points[1:]:
+            line_path.lineTo(x, y)
+
+        # Path for gradient fill below line
+        fill_path = QPainterPath(line_path)
+        fill_path.lineTo(points[-1][0], h)
+        fill_path.lineTo(points[0][0], h)
+        fill_path.closeSubpath()
+
+        # Fill subtle gradient
+        c = QColor(self.color_hex)
+        grad = QLinearGradient(0, 0, 0, h)
+        grad.setColorAt(0.0, QColor(c.red(), c.green(), c.blue(), 55))
+        grad.setColorAt(1.0, QColor(c.red(), c.green(), c.blue(), 0))
+        painter.fillPath(fill_path, grad)
+
+        # Draw stroke
+        pen = QPen(c, 1.8)
+        painter.strokePath(line_path, pen)
+
+        # Draw glowing dot on newest sample
+        last_x, last_y = points[-1]
+        painter.setBrush(QColor("#ffffff"))
+        painter.setPen(pen)
+        painter.drawEllipse(int(last_x - 2), int(last_y - 2), 4, 4)
 
 
 class StatCard(QFrame):
-    """Telemetry Card displaying a live metric with status badges."""
+    """Telemetry Card displaying a live metric with status badges and a 60s sparkline."""
 
-    def __init__(self, title: str, initial_value: str, unit: str = "", subtitle: str = ""):
+    def __init__(self, title: str, initial_value: str, unit: str = "", subtitle: str = "", sparkline_color: str = "#00e5ff"):
         super().__init__()
         self.setProperty("class", "CardFrame")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(6)
+        layout.setContentsMargins(14, 14, 14, 12)
+        layout.setSpacing(4)
 
         # Header: Title + Badge
         top_row = QHBoxLayout()
@@ -62,7 +147,11 @@ class StatCard(QFrame):
         self.sub_lbl.setStyleSheet("color: #94a3b8; font-size: 11px;")
         layout.addWidget(self.sub_lbl)
 
-    def update_value(self, value_text: str, subtitle_text: str = None, color: str = None, badge_text: str = None, badge_color: str = None):
+        # 60-Second Sparkline Graph
+        self.sparkline = SparklineWidget(color_hex=sparkline_color, parent=self)
+        layout.addWidget(self.sparkline)
+
+    def update_value(self, value_text: str, subtitle_text: str = None, color: str = None, badge_text: str = None, badge_color: str = None, numeric_val: float = None):
         self.val_lbl.setText(value_text)
         if subtitle_text is not None:
             self.sub_lbl.setText(subtitle_text)
@@ -78,6 +167,17 @@ class StatCard(QFrame):
             )
         elif badge_text is not None:
             self.badge_lbl.setVisible(False)
+
+        # Update sparkline
+        if numeric_val is not None:
+            self.sparkline.add_point(numeric_val)
+        else:
+            try:
+                # Fallback parse float from value_text
+                cleaned = value_text.replace(",", "").strip()
+                self.sparkline.add_point(float(cleaned))
+            except ValueError:
+                pass
 
 
 class SliderSetting(QFrame):
@@ -249,10 +349,6 @@ class SegmentedControl(QFrame):
     selectionChanged = Signal(str)
 
     def __init__(self, items: list[tuple[str, str, str]]):
-        """
-        items: list of (key, title, subtitle)
-        e.g., [("ultra_gaming", "Ultra Gaming", "25W"), ("balanced", "Daily Balanced", "24W"), ...]
-        """
         super().__init__()
         self.setStyleSheet(
             "QFrame { background-color: #10141d; border: 1px solid #1a2230; border-radius: 8px; padding: 3px; }"
@@ -306,3 +402,72 @@ class SegmentedControl(QFrame):
                     "color: #8c9ba5; font-weight: 600; padding: 8px 14px; font-size: 12px; }"
                     "QPushButton:hover { background-color: #171d2a; color: #ffffff; }"
                 )
+
+
+class RevertCountdownDialog(QDialog):
+    """Safety countdown dialog: auto-reverts settings after 15s if unconfirmed."""
+
+    def __init__(self, timeout_sec: int = 15, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Confirm Applied Settings")
+        self.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
+        self.setFixedSize(400, 190)
+
+        self.remaining = timeout_sec
+        self.confirmed = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 22, 22, 20)
+        layout.setSpacing(16)
+
+        title = QLabel("⚡ Hardware Limits Applied")
+        title.setStyleSheet("font-size: 15px; font-weight: bold; color: #ffffff;")
+        layout.addWidget(title)
+
+        self.msg_lbl = QLabel(
+            f"Keep these settings? To protect hardware stability, settings will "
+            f"automatically revert in {self.remaining} seconds if not confirmed."
+        )
+        self.msg_lbl.setStyleSheet("font-size: 12px; color: #cfd7e3; line-height: 1.4;")
+        self.msg_lbl.setWordWrap(True)
+        layout.addWidget(self.msg_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        self.btn_keep = QPushButton("Keep Changes")
+        self.btn_keep.setProperty("class", "ApplyButton")
+        self.btn_keep.clicked.connect(self._on_keep)
+        btn_row.addWidget(self.btn_keep)
+
+        self.btn_revert = QPushButton(f"Revert Now ({self.remaining}s)")
+        self.btn_revert.setProperty("class", "SecondaryButton")
+        self.btn_revert.clicked.connect(self._on_revert)
+        btn_row.addWidget(self.btn_revert)
+
+        layout.addLayout(btn_row)
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(1000)
+
+    def _tick(self):
+        self.remaining -= 1
+        self.msg_lbl.setText(
+            f"Keep these settings? To protect hardware stability, settings will "
+            f"automatically revert in {self.remaining} seconds if not confirmed."
+        )
+        self.btn_revert.setText(f"Revert Now ({self.remaining}s)")
+        if self.remaining <= 0:
+            self.timer.stop()
+            self.reject()
+
+    def _on_keep(self):
+        self.confirmed = True
+        self.timer.stop()
+        self.accept()
+
+    def _on_revert(self):
+        self.confirmed = False
+        self.timer.stop()
+        self.reject()
