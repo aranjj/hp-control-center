@@ -118,6 +118,8 @@ class MainWindow(QMainWindow):
         # Initial check & load
         self._check_daemon_status()
         self._load_profile_into_ui(self.profile_mgr.current_profile_key)
+        self._applied_settings = self._collect_ui_settings()
+        self._recalculate_unsaved_changes()
         self._update_telemetry()
 
         # Ensure Dashboard is the default tab on open

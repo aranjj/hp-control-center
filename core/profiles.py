@@ -79,7 +79,18 @@ class ProfileManager:
         self.load_config()
 
     def get_profile(self, key: str) -> dict:
-        return self.profiles.get(key, self.profiles["balanced"])
+        prof = dict(self.profiles.get(key, self.profiles["balanced"]))
+        if "active_p_threads" not in prof or "active_e_cores" not in prof:
+            try:
+                from core.hardware import get_core_topology_details
+                det = get_core_topology_details()
+                if "active_p_threads" not in prof:
+                    prof["active_p_threads"] = len(det["p_cpus"])
+                if "active_e_cores" not in prof:
+                    prof["active_e_cores"] = len(det["e_cpus"])
+            except Exception:
+                pass
+        return prof
 
     def set_active_profile(self, key: str):
         if key in self.profiles:
