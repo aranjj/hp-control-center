@@ -1,18 +1,21 @@
 """
-Custom UI Widgets for HP Control Center
+Custom UI Widgets for Performance Control Center
 Includes:
+- make_tinted_icon helper for symbolic Breeze icons
 - StatCard with live 60-second rolling SparklineWidget using system accent & threshold status
-- SliderSetting with fixed-width editable spinbox & per-slider reset
+- SliderSetting with unified two-column grid support (fixed label, equal slider, trailing reset)
 - CollapsibleSection container
 - SegmentedControl profile bar
-- RevertCountdownDialog for 15s safety revert
+- RevertCountdownDialog for safety revert
 """
 
+import re
 from collections import deque
 from PySide6.QtWidgets import (
     QFrame,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QLabel,
     QSlider,
     QSpinBox,
@@ -21,10 +24,30 @@ from PySide6.QtWidgets import (
     QWidget,
     QDialog,
 )
-from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen, QLinearGradient, QIcon
+from PySide6.QtCore import Qt, Signal, QTimer, QObject
+from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen, QLinearGradient, QIcon, QPixmap
 
 from ui.styles import STATUS_WARN, STATUS_CRITICAL
+
+
+def make_tinted_icon(theme_name: str, color: QColor, size: int = 16) -> QIcon:
+    """Renders a monochrome symbolic Breeze icon tinted with the specified QColor."""
+    base_ic = QIcon.fromTheme(theme_name)
+    if base_ic.isNull() and "-symbolic" in theme_name:
+        base_ic = QIcon.fromTheme(theme_name.replace("-symbolic", ""))
+    pix = base_ic.pixmap(size, size)
+    if pix.isNull():
+        return base_ic
+
+    tinted = QPixmap(pix.size())
+    tinted.fill(Qt.transparent)
+    p = QPainter(tinted)
+    p.drawPixmap(0, 0, pix)
+    p.setCompositionMode(QPainter.CompositionMode_SourceIn)
+    p.fillRect(tinted.rect(), color)
+    p.end()
+
+    return QIcon(tinted)
 
 
 class SparklineWidget(QWidget):
@@ -131,7 +154,7 @@ class StatCard(QFrame):
         self.setProperty("class", "CardFrame")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 12)
+        layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(4)
 
         # Header: Title + Badge
@@ -166,7 +189,7 @@ class StatCard(QFrame):
 
         # Subtitle / Status tag
         self.sub_lbl = QLabel(subtitle)
-        self.sub_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+        self.sub_lbl.setProperty("class", "Footnote")
         layout.addWidget(self.sub_lbl)
 
         # 60-Second Sparkline Graph
@@ -209,40 +232,59 @@ class StatCard(QFrame):
                 pass
 
 
-class SliderSetting(QFrame):
+class SliderSetting(QObject):
     """
-    Slider setting with:
-    - Title
-    - Small fixed-width editable spinbox next to label
-    - Per-slider reset-to-default button with Breeze refresh icon
-    - Full-width horizontal slider
-    - Min and Max numeric labels at the ends
+    Slider setting component with unified two-column grid support:
+    - Col 0: Fixed-width label column
+    - Col 1: Equal-width horizontal slider with min/max labels below
+    - Col 2: Trailing spinbox & per-slider reset button right-aligned
     """
 
     valueChanged = Signal(int)
 
-    def __init__(self, label: str, min_val: int, max_val: int, default_val: int, unit: str = "W"):
-        super().__init__()
+    def __init__(self, label: str, min_val: int, max_val: int, default_val: int, unit: str = "W", label_width: int = 240, parent=None):
+        super().__init__(parent)
         self.min_val = min_val
         self.max_val = max_val
         self.default_val = default_val
         self.unit = unit
         self._block_signals = False
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 4, 0, 8)
-        layout.setSpacing(4)
-
-        # Header Row: [Label] ... [SpinBox] [Reset Button]
-        header = QHBoxLayout()
-        header.setSpacing(8)
-
+        # Col 0: Label
         self.title_lbl = QLabel(label)
-        self.title_lbl.setStyleSheet("font-weight: 600; color: palette(window-text); font-size: 13px;")
-        header.addWidget(self.title_lbl)
-        header.addStretch()
+        self.title_lbl.setProperty("class", "FormLabel")
+        self.title_lbl.setFixedWidth(label_width)
 
-        # Fixed-width editable spinbox
+        # Col 1: Slider box
+        self.slider_widget = QWidget()
+        slider_box = QVBoxLayout(self.slider_widget)
+        slider_box.setSpacing(2)
+        slider_box.setContentsMargins(0, 0, 0, 0)
+
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(min_val, max_val)
+        self.slider.setValue(default_val)
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        slider_box.addWidget(self.slider)
+
+        range_row = QHBoxLayout()
+        range_row.setContentsMargins(0, 0, 0, 0)
+        self.min_lbl = QLabel(f"{min_val} {unit}")
+        self.min_lbl.setProperty("class", "Footnote")
+        range_row.addWidget(self.min_lbl)
+        range_row.addStretch()
+        self.max_lbl = QLabel(f"{max_val} {unit}")
+        self.max_lbl.setProperty("class", "Footnote")
+        range_row.addWidget(self.max_lbl)
+        slider_box.addLayout(range_row)
+
+        # Col 2: Trailing controls right-aligned (SpinBox + Reset)
+        self.trailing_widget = QWidget()
+        self.trailing_widget.setFixedWidth(124)
+        trailing = QHBoxLayout(self.trailing_widget)
+        trailing.setSpacing(6)
+        trailing.setContentsMargins(0, 0, 0, 0)
+
         self.spin = QSpinBox()
         self.spin.setRange(min_val, max_val)
         self.spin.setValue(default_val)
@@ -251,35 +293,23 @@ class SliderSetting(QFrame):
         self.spin.setAlignment(Qt.AlignCenter)
         self.spin.setProperty("class", "SettingSpin")
         self.spin.valueChanged.connect(self._on_spin_changed)
-        header.addWidget(self.spin)
+        trailing.addWidget(self.spin)
 
-        # Per-slider reset button with native Breeze icon
         self.btn_reset = QToolButton()
-        self.btn_reset.setIcon(QIcon.fromTheme("view-refresh"))
+        self.btn_reset.setIcon(make_tinted_icon("view-refresh-symbolic", QColor("#ffffff"), 14))
         self.btn_reset.setToolTip(f"Reset to default ({default_val} {self.unit})")
         self.btn_reset.setProperty("class", "SettingReset")
+        self.btn_reset.setCursor(Qt.PointingHandCursor)
         self.btn_reset.clicked.connect(self.reset_to_default)
-        header.addWidget(self.btn_reset)
+        trailing.addWidget(self.btn_reset)
 
-        layout.addLayout(header)
+    def add_to_grid(self, grid: QGridLayout, row: int):
+        grid.addWidget(self.title_lbl, row, 0, 1, 1, Qt.AlignVCenter)
+        grid.addWidget(self.slider_widget, row, 1, 1, 1)
+        grid.addWidget(self.trailing_widget, row, 2, 1, 1, Qt.AlignVCenter | Qt.AlignRight)
 
-        # Slider Row
-        self.slider = QSlider(Qt.Horizontal)
-        self.slider.setRange(min_val, max_val)
-        self.slider.setValue(default_val)
-        self.slider.valueChanged.connect(self._on_slider_changed)
-        layout.addWidget(self.slider)
-
-        # Min / Max labels at the ends
-        range_row = QHBoxLayout()
-        self.min_lbl = QLabel(f"{min_val} {unit}")
-        self.min_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 10px; font-weight: 500;")
-        range_row.addWidget(self.min_lbl)
-        range_row.addStretch()
-        self.max_lbl = QLabel(f"{max_val} {unit}")
-        self.max_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 10px; font-weight: 500;")
-        range_row.addWidget(self.max_lbl)
-        layout.addLayout(range_row)
+    def recolor_icon(self, color: QColor):
+        self.btn_reset.setIcon(make_tinted_icon("view-refresh-symbolic", color, 14))
 
     def _on_slider_changed(self, val: int):
         if self._block_signals:
@@ -361,7 +391,7 @@ class CollapsibleSection(QFrame):
 
 
 class SegmentedControl(QFrame):
-    """Horizontal segmented button control for profiles."""
+    """Horizontal segmented button control for profiles with min-width and padding."""
 
     selectionChanged = Signal(str)
 
@@ -398,27 +428,28 @@ class SegmentedControl(QFrame):
 class RevertCountdownDialog(QDialog):
     """Safety countdown dialog: auto-reverts settings after 15s if unconfirmed."""
 
-    def __init__(self, timeout_sec: int = 15, parent=None):
+    def __init__(self, timeout_sec: int = 15, title: str = "Hardware Limits Applied", message: str = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Confirm Applied Settings")
+        self.setWindowTitle(title)
         self.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
-        self.setFixedSize(400, 190)
+        self.setFixedSize(420, 190)
 
         self.remaining = timeout_sec
         self.confirmed = False
+        self._default_msg = message or (
+            f"Keep these settings? To protect hardware stability, settings will "
+            f"automatically revert in {self.remaining} seconds if not confirmed."
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 22, 22, 20)
         layout.setSpacing(16)
 
-        title = QLabel("Hardware Limits Applied")
-        title.setStyleSheet("font-size: 15px; font-weight: bold; color: palette(window-text);")
-        layout.addWidget(title)
+        title_lbl = QLabel(title)
+        title_lbl.setProperty("class", "SectionTitle")
+        layout.addWidget(title_lbl)
 
-        self.msg_lbl = QLabel(
-            f"Keep these settings? To protect hardware stability, settings will "
-            f"automatically revert in {self.remaining} seconds if not confirmed."
-        )
+        self.msg_lbl = QLabel(self._default_msg)
         self.msg_lbl.setStyleSheet("font-size: 12px; color: palette(window-text); line-height: 1.4;")
         self.msg_lbl.setWordWrap(True)
         layout.addWidget(self.msg_lbl)
@@ -444,10 +475,9 @@ class RevertCountdownDialog(QDialog):
 
     def _tick(self):
         self.remaining -= 1
-        self.msg_lbl.setText(
-            f"Keep these settings? To protect hardware stability, settings will "
-            f"automatically revert in {self.remaining} seconds if not confirmed."
-        )
+        if "revert in" in self._default_msg:
+            updated = re.sub(r"revert in \d+ seconds", f"revert in {self.remaining} seconds", self._default_msg)
+            self.msg_lbl.setText(updated)
         self.btn_revert.setText(f"Revert Now ({self.remaining}s)")
         if self.remaining <= 0:
             self.timer.stop()
