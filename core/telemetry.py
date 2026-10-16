@@ -232,6 +232,25 @@ class TelemetryReader:
                 pass
         return False if self.power_supply_paths else True
 
+    def get_online_cores(self) -> dict[int, bool]:
+        """Returns online status map for all CPUs."""
+        res = {}
+        for path in glob.glob("/sys/devices/system/cpu/cpu[0-9]*"):
+            num_str = os.path.basename(path)[3:]
+            if num_str.isdigit():
+                cpu = int(num_str)
+                online_file = os.path.join(path, "online")
+                if os.path.exists(online_file):
+                    try:
+                        with open(online_file, "r") as f:
+                            res[cpu] = (f.read().strip() == "1")
+                    except OSError:
+                        res[cpu] = True
+                else:
+                    # cpu0 is always online
+                    res[cpu] = True
+        return res
+
     def get_all(self) -> dict:
         """Polls full telemetry snapshot."""
         return {
@@ -240,5 +259,6 @@ class TelemetryReader:
             "fan_rpm": self.get_fan_rpm(),
             "gpu": self.get_gpu_telemetry(),
             "cpu_freq": self.get_cpu_frequencies(),
+            "online_cores": self.get_online_cores(),
             "ac_connected": self.is_ac_connected(),
         }

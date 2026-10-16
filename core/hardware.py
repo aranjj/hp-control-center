@@ -240,6 +240,124 @@ class HardwareController:
 
         return success
 
+    def _set_cpu_online(self, cpu: int, online: bool) -> bool:
+        """Writes 0 or 1 to cpuN/online sysfs. CPU 0 is never offlined."""
+        if cpu == 0:
+            return True
+        path = f"/sys/devices/system/cpu/cpu{cpu}/online"
+        if os.path.exists(path):
+            try:
+                with open(path, "w") as f:
+                    f.write("1\n" if online else "0\n")
+                return True
+            except OSError:
+                return False
+        return False
+
+    def set_online_cores(self, active_p_threads: int = None, active_e_cores: int = None):
+        """Enforces daemon core parking rules:
+        - CPU 0 is never offlined;
+        - At least one P-core thread always stays online;
+        - P-core siblings are offlined together as pairs from highest CPU down;
+        - E-cores are offlined from highest CPU down.
+        """
+        details = get_core_topology_details()
+        p_pairs = sorted(details["p_pairs"], key=lambda pair: max(pair), reverse=True)
+        e_cpus = sorted(details["e_cpus"], reverse=True)
+
+        # 1. P-core threads offlining (pairs kept together)
+        if active_p_threads is not None and p_pairs:
+            total_p_threads = len(details["p_cpus"])
+            desired_p = max(2 if len(p_pairs) > 1 else 1, min(total_p_threads, active_p_threads))
+            threads_per_pair = len(p_pairs[0]) if p_pairs else 1
+            pairs_to_keep = max(1, (desired_p + threads_per_pair - 1) // threads_per_pair)
+
+            # Sort pairs highest down: e.g. [[2, 3], [0, 1]]
+            pairs_to_offline = p_pairs[: max(0, len(p_pairs) - pairs_to_keep)]
+            pairs_to_online = p_pairs[max(0, len(p_pairs) - pairs_to_keep) :]
+
+            for pair in pairs_to_offline:
+                for cpu in pair:
+                    if cpu != 0:
+                        self._set_cpu_online(cpu, False)
+            for pair in pairs_to_online:
+                for cpu in pair:
+                    if cpu != 0:
+                        self._set_cpu_online(cpu, True)
+
+        # 2. E-core offlining
+        if active_e_cores is not None and e_cpus:
+            total_e = len(e_cpus)
+            desired_e = max(0, min(total_e, active_e_cores))
+            e_to_offline = e_cpus[: max(0, total_e - desired_e)]
+            e_to_online = e_cpus[max(0, total_e - desired_e) :]
+
+            for cpu in e_to_offline:
+                self._set_cpu_online(cpu, False)
+            for cpu in e_to_online:
+                self._set_cpu_online(cpu, True)
+
+    def restore_all_cores(self):
+        """Brings all CPU cores back online on Reset Defaults or daemon shutdown."""
+        for path in glob.glob("/sys/devices/system/cpu/cpu[1-9]*/online"):
+            try:
+                with open(path, "w") as f:
+                    f.write("1\n")
+            except OSError:
+                pass
+
+
+def get_core_topology_details() -> dict:
+    """Discovers thread sibling pairs and online status for all CPUs."""
+    all_cpus = []
+    for cpu_dir in sorted(glob.glob("/sys/devices/system/cpu/cpu[0-9]*"), key=lambda p: int(os.path.basename(p)[3:])):
+        num = int(os.path.basename(cpu_dir)[3:])
+        all_cpus.append(num)
+
+    topo = get_cpu_topology_info()
+    p_cpus = topo["p_cpus"]
+    e_cpus = topo["e_cpus"]
+
+    # Read thread siblings list for each CPU
+    p_pairs = []
+    seen = set()
+    for cpu in p_cpus:
+        if cpu in seen:
+            continue
+        sib_path = f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"
+        sibs = parse_sysfs_cpulist(sib_path) if os.path.exists(sib_path) else [cpu]
+        sibs = [c for c in sibs if c in p_cpus]
+        if not sibs:
+            sibs = [cpu]
+        for c in sibs:
+            seen.add(c)
+        p_pairs.append(sorted(sibs))
+
+    # Read online states & writability
+    online_map = {}
+    writable_map = {}
+    for c in all_cpus:
+        p = f"/sys/devices/system/cpu/cpu{c}/online"
+        if os.path.exists(p):
+            try:
+                with open(p, "r") as f:
+                    online_map[c] = (f.read().strip() == "1")
+            except OSError:
+                online_map[c] = True
+            writable_map[c] = os.access(p, os.W_OK)
+        else:
+            online_map[c] = True
+            writable_map[c] = False
+
+    return {
+        "all_cpus": all_cpus,
+        "p_cpus": p_cpus,
+        "e_cpus": e_cpus,
+        "p_pairs": p_pairs,
+        "online_map": online_map,
+        "writable_map": writable_map,
+    }
+
 
 def parse_sysfs_cpulist(path: str) -> list[int]:
     """Parses sysfs cpu list format (e.g., '0-3,5' -> [0, 1, 2, 3, 5])."""

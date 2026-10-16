@@ -39,7 +39,7 @@ from core.telemetry import TelemetryReader
 from core.profiles import ProfileManager
 from core.display import DisplayManager
 from core.sysinfo import SystemInfoReader
-from core.hardware import get_cpu_topology_info
+from core.hardware import get_cpu_topology_info, get_core_topology_details
 from ui.styles import (
     STATUS_OK,
     STATUS_WARN,
@@ -51,6 +51,7 @@ from ui.widgets import (
     StatCard,
     SliderSetting,
     FreqSliderSetting,
+    ThreadIndicatorWidget,
     CollapsibleSection,
     SegmentedControl,
     RevertCountdownDialog,
@@ -513,6 +514,69 @@ class MainWindow(QMainWindow):
         title_core = QLabel("Core Management")
         title_core.setProperty("class", "SectionTitle")
         grid_core.addWidget(title_core, 0, 0, 1, 3)
+
+        core_det = get_core_topology_details()
+        self.core_topology_details = core_det
+
+        total_p = len(core_det["p_cpus"])
+        total_e = len(core_det["e_cpus"])
+
+        # P-core active threads slider
+        self.slider_p_threads = SliderSetting(
+            "Active P-core threads",
+            min_val=2 if total_p > 1 else 1,
+            max_val=total_p if total_p > 0 else 1,
+            default_val=total_p if total_p > 0 else 1,
+            unit="threads",
+            label_width=LABEL_COL_WIDTH,
+        )
+        self.slider_p_threads.slider.setSingleStep(2)
+        self.slider_p_threads.spin.setSingleStep(2)
+        self.slider_p_threads.valueChanged.connect(self._on_setting_modified)
+        self.slider_p_threads.add_to_grid(grid_core, 1)
+
+        p_has_online = any(os.path.exists(f"/sys/devices/system/cpu/cpu{c}/online") for c in core_det["p_cpus"] if c != 0)
+        if not p_has_online:
+            self.slider_p_threads.slider.setEnabled(False)
+            self.slider_p_threads.spin.setEnabled(False)
+            self.slider_p_threads.btn_reset.setEnabled(False)
+            reason = "CPU core online file missing; kernel does not allow offlining P-cores."
+            self.slider_p_threads.title_lbl.setToolTip(reason)
+            self.slider_p_threads.slider.setToolTip(reason)
+
+        # E-core active cores slider
+        self.slider_e_cores = SliderSetting(
+            "Active E-cores",
+            min_val=0,
+            max_val=total_e if total_e > 0 else 1,
+            default_val=total_e if total_e > 0 else 1,
+            unit="cores",
+            label_width=LABEL_COL_WIDTH,
+        )
+        self.slider_e_cores.valueChanged.connect(self._on_setting_modified)
+        self.slider_e_cores.add_to_grid(grid_core, 2)
+
+        e_has_online = any(os.path.exists(f"/sys/devices/system/cpu/cpu{c}/online") for c in core_det["e_cpus"])
+        if not e_has_online:
+            self.slider_e_cores.slider.setEnabled(False)
+            self.slider_e_cores.spin.setEnabled(False)
+            self.slider_e_cores.btn_reset.setEnabled(False)
+            reason = "CPU core online file missing; kernel does not allow offlining E-cores."
+            self.slider_e_cores.title_lbl.setToolTip(reason)
+            self.slider_e_cores.slider.setToolTip(reason)
+
+        # Live thread indicator row
+        lbl_threads = QLabel("Active Thread Topology:")
+        lbl_threads.setProperty("class", "FormLabel")
+        lbl_threads.setFixedWidth(LABEL_COL_WIDTH)
+        grid_core.addWidget(lbl_threads, 3, 0, Qt.AlignVCenter)
+
+        self.thread_indicator = ThreadIndicatorWidget(
+            p_threads=core_det["p_cpus"],
+            e_threads=core_det["e_cpus"],
+        )
+        grid_core.addWidget(self.thread_indicator, 3, 1, 1, 2)
+
         layout.addWidget(self.card_core)
 
         # ----------------------------------------------------
@@ -1200,6 +1264,7 @@ class MainWindow(QMainWindow):
             getattr(self, s, None) for s in [
                 "slider_pl1", "slider_pl2", "slider_gpu_min", "slider_gpu_max",
                 "slider_p_max", "slider_e_max", "slider_p_min", "slider_e_min",
+                "slider_p_threads", "slider_e_cores",
             ]
         ]:
             if slider and hasattr(slider, "recolor_icon"):
@@ -1359,6 +1424,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, "slider_e_min"):
             self.slider_e_min.set_value(prof.get("e_core_min_mhz", topo["e_min_mhz"]))
 
+        det = getattr(self, "core_topology_details", None) or get_core_topology_details()
+        if hasattr(self, "slider_p_threads"):
+            self.slider_p_threads.set_value(prof.get("active_p_threads", len(det["p_cpus"])))
+        if hasattr(self, "slider_e_cores"):
+            self.slider_e_cores.set_value(prof.get("active_e_cores", len(det["e_cpus"])))
+
         self.profile_segmented.set_selected(key)
         self.profile_mgr.current_profile_key = key
         self._is_loading_profile = False
@@ -1386,6 +1457,10 @@ class MainWindow(QMainWindow):
                 settings["p_core_min_mhz"] = self.slider_p_min.get_value()
             if hasattr(self, "slider_e_min"):
                 settings["e_core_min_mhz"] = self.slider_e_min.get_value()
+        if hasattr(self, "slider_p_threads"):
+            settings["active_p_threads"] = self.slider_p_threads.get_value()
+        if hasattr(self, "slider_e_cores"):
+            settings["active_e_cores"] = self.slider_e_cores.get_value()
         return settings
 
     def _recalculate_unsaved_changes(self):
@@ -1663,6 +1738,10 @@ class MainWindow(QMainWindow):
             self.slider_p_min.update_actual_freq(cpu.get("p_core_mhz"))
         if hasattr(self, "slider_e_min"):
             self.slider_e_min.update_actual_freq(cpu.get("e_core_mhz"))
+
+        # Live thread indicator update
+        if hasattr(self, "thread_indicator") and "online_cores" in data:
+            self.thread_indicator.set_online_map(data["online_cores"])
 
         # Power source badge
         if data["ac_connected"]:

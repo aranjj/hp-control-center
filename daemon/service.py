@@ -102,6 +102,12 @@ class DaemonService:
             limit_max = clamped.get("e_core_max_mhz", topo["e_max_mhz"])
             clamped["e_core_min_mhz"] = max(topo["e_min_mhz"], min(limit_max, raw_e_min))
 
+        # 9. Core Management (Active P-core threads & Active E-cores)
+        if "active_p_threads" in settings:
+            clamped["active_p_threads"] = int(settings["active_p_threads"])
+        if "active_e_cores" in settings:
+            clamped["active_e_cores"] = int(settings["active_e_cores"])
+
         return clamped
 
     def apply_current_settings(self):
@@ -132,6 +138,13 @@ class DaemonService:
                     p_min_mhz=s.get("p_core_min_mhz"),
                     e_min_mhz=s.get("e_core_min_mhz"),
                 )
+
+                # 7. Core Management (Parking / Unparking Cores)
+                if "active_p_threads" in s or "active_e_cores" in s:
+                    self.hw.set_online_cores(
+                        active_p_threads=s.get("active_p_threads"),
+                        active_e_cores=s.get("active_e_cores"),
+                    )
 
             except Exception as e:
                 print(f"[!] Error applying settings: {e}", file=sys.stderr)
@@ -178,6 +191,12 @@ class DaemonService:
                         "active_settings": self.active_settings,
                         "telemetry": self.telemetry.get_all(),
                     }
+            elif cmd == "reset_defaults":
+                self.hw.restore_all_cores()
+                with self.lock:
+                    self.active_settings = dict(DEFAULT_PROFILES["balanced"])
+                self.apply_current_settings()
+                resp = {"status": "ok", "message": "Defaults restored and all cores brought online."}
             elif cmd == "ping":
                 resp = {"status": "ok", "daemon_running": True}
             else:
@@ -214,6 +233,7 @@ class DaemonService:
         def sig_handler(sig, frame):
             print("\n[!] Shutting down daemon...")
             self.running = False
+            self.hw.restore_all_cores()
             if os.path.exists(SOCKET_PATH):
                 os.remove(SOCKET_PATH)
             sys.exit(0)
