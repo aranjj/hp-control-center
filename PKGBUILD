@@ -1,6 +1,6 @@
 # Maintainer: Aran <aran@local>
 pkgname=hp-control-center
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc="Performance, power & thermal control center for HP laptops (Intel Core & Core Ultra / Arc / Iris Xe)"
 arch=('any')

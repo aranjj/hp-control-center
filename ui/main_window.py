@@ -238,7 +238,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addStretch()
 
         # Mini footer in sidebar
-        self.side_footer_lbl = QLabel("v0.2-alpha")
+        self.side_footer_lbl = QLabel("v0.2.1")
         self.side_footer_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 10px; padding-left: 12px;")
         sidebar_layout.addWidget(self.side_footer_lbl)
 
@@ -1295,7 +1295,7 @@ class MainWindow(QMainWindow):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setFixedHeight(160)
-        self.log_text.setPlainText(f"{APP_NAME} v0.2-alpha started.\nPolling sensors every 1000ms.\n")
+        self.log_text.setPlainText(f"{APP_NAME} v0.2.1 started.\nPolling sensors every 1000ms.\n")
         self.log_section.add_widget(self.log_text)
         layout.addWidget(self.log_section)
 
