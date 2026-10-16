@@ -69,7 +69,7 @@ QPushButton.NavBtnActive {{
     padding: 10px 14px;
     font-weight: bold;
     font-size: 13px;
-    color: palette(highlight);
+    color: palette(window-text);
     text-align: left;
 }}
 
@@ -136,24 +136,36 @@ QPushButton.SegmentBtn:checked {{
 /* Sliders */
 QSlider::groove:horizontal {{
     height: 6px;
-    background: palette(mid);
+    background: palette(midlight);
     border-radius: 3px;
 }}
 QSlider::sub-page:horizontal {{
     background: palette(highlight);
     border-radius: 3px;
 }}
+QSlider::add-page:horizontal {{
+    background: palette(midlight);
+    border-radius: 3px;
+}}
 QSlider::handle:horizontal {{
-    background: palette(base);
-    border: 2px solid palette(highlight);
-    width: 14px;
-    height: 14px;
-    margin: -4px 0;
-    border-radius: 7px;
+    background: #ffffff;
+    border: 3px solid palette(highlight);
+    width: 16px;
+    height: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
 }}
 QSlider::handle:horizontal:hover {{
+    background: #ffffff;
+    border: 3px solid palette(highlight);
+    width: 18px;
+    height: 18px;
+    margin: -6px 0;
+    border-radius: 9px;
+}}
+QSlider::handle:horizontal:pressed {{
     background: palette(highlight);
-    border: 2px solid palette(highlighted-text);
+    border: 3px solid #ffffff;
 }}
 
 /* SpinBox */

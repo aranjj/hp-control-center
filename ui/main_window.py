@@ -66,9 +66,9 @@ SOCKET_PATH = "/tmp/hp_control_center.sock"
 APP_NAME = "Control Center"
 
 # Form layout column constants for two-column grid
-LABEL_COL_WIDTH = 240
-TRAILING_COL_WIDTH = 124
-COMBO_WIDTH = 260
+LABEL_COL_WIDTH = 130
+TRAILING_COL_WIDTH = 130
+COMBO_WIDTH = 220
 
 
 class MainWindow(QMainWindow):
@@ -91,13 +91,15 @@ class MainWindow(QMainWindow):
         # Track base profile / baseline values for dirty check
         self._applied_settings = dict(self.profile_mgr.get_profile(self.profile_mgr.current_profile_key))
 
-        # Restore window geometry and theme from QSettings
+        # Restore window geometry and theme from QSettings (default 1280x800)
         self.settings = QSettings("HPControl", "ControlCenter")
         geometry = self.settings.value("geometry")
-        if geometry:
+        if geometry and self.settings.value("window_v2_geom", False):
             self.restoreGeometry(geometry)
         else:
-            self.resize(880, 840)
+            self.resize(1280, 800)
+            self.settings.setValue("window_v2_geom", True)
+        self.setMinimumSize(800, 600)
 
         saved_theme = self.settings.value("theme", "Follow System (KDE / Qt Palette)")
         if saved_theme not in THEMES:
@@ -123,10 +125,54 @@ class MainWindow(QMainWindow):
         self._update_nav_buttons(0)
         self.profile_segmented.setVisible(True)
 
+        # Initial responsive cards placement
+        self._update_responsive_layout(self.width())
+
     def closeEvent(self, event):
         """Remember window size/position on close."""
         self.settings.setValue("geometry", self.saveGeometry())
         super().closeEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_responsive_layout(self.width())
+
+    def _update_responsive_layout(self, width: int):
+        """Responsive card layout: 2 columns when width > 1100 px, 1 column otherwise."""
+        is_wide = width > 1100
+        if getattr(self, "_last_is_wide", None) == is_wide:
+            return
+        self._last_is_wide = is_wide
+
+        if hasattr(self, "perf_grid"):
+            self._relayout_tab_cards(self.perf_grid, self.perf_cards, is_wide)
+        if hasattr(self, "disp_grid"):
+            self._relayout_tab_cards(self.disp_grid, self.disp_cards, is_wide)
+        if hasattr(self, "sysinfo_grid"):
+            self._relayout_tab_cards(self.sysinfo_grid, self.sysinfo_cards, is_wide, span_last=True)
+        if hasattr(self, "settings_grid"):
+            self._relayout_tab_cards(self.settings_grid, self.settings_cards, is_wide)
+
+    def _relayout_tab_cards(self, grid: QGridLayout, cards: list, is_wide: bool, span_last: bool = False):
+        if not grid or not cards:
+            return
+
+        for card in cards:
+            grid.removeWidget(card)
+
+        if is_wide:
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 1)
+            for i, card in enumerate(cards):
+                if span_last and i == len(cards) - 1 and len(cards) % 2 != 0:
+                    grid.addWidget(card, i // 2, 0, 1, 2, Qt.AlignTop)
+                else:
+                    grid.addWidget(card, i // 2, i % 2, 1, 1, Qt.AlignTop)
+        else:
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 0)
+            for i, card in enumerate(cards):
+                grid.addWidget(card, i, 0, 1, 1, Qt.AlignTop)
 
     def changeEvent(self, event):
         """React live to KDE Plasma / Qt system palette changes at runtime."""
@@ -172,9 +218,9 @@ class MainWindow(QMainWindow):
         # Navigation Buttons with symbolic Breeze icon names
         self.nav_buttons = []
         self.nav_items = [
-            ("utilities-system-monitor-symbolic", "Dashboard"),
+            ("view-dashboard-symbolic", "Dashboard"),
             ("speedometer-symbolic", "Performance"),
-            ("video-display-symbolic", "Graphics"),
+            ("video-card-symbolic", "Graphics"),
             ("preferences-desktop-display-symbolic", "Display"),
             ("temperature-cold-symbolic", "Cooling"),
             ("help-about-symbolic", "System Info"),
@@ -409,7 +455,8 @@ class MainWindow(QMainWindow):
         lbl_mmio = QLabel("MMIO Synchronization:")
         lbl_mmio.setProperty("class", "FormLabel")
         lbl_mmio.setFixedWidth(LABEL_COL_WIDTH)
-        self.chk_sync_mmio = ToggleSwitch("Sync to MMIO (MCHBAR 0x59A0 - Defeats EC lock)")
+        self.chk_sync_mmio = ToggleSwitch("Sync to MMIO (Defeats EC lock)")
+        self.chk_sync_mmio.setToolTip("Sync to MMIO (MCHBAR 0x59A0) - Defeats EC lock resets")
         self.chk_sync_mmio.setChecked(True)
         self.chk_sync_mmio.toggled.connect(self._on_setting_modified)
         grid_pwr.addWidget(lbl_mmio, 3, 0)
@@ -422,16 +469,14 @@ class MainWindow(QMainWindow):
         self.combo_reassert.setFixedWidth(COMBO_WIDTH)
         self.combo_reassert.addItem("Disabled (Apply once)", 0)
         self.combo_reassert.addItem("Every 3 seconds", 3)
-        self.combo_reassert.addItem("Every 5 seconds (Recommended)", 5)
+        self.combo_reassert.addItem("Every 5s (Recommended)", 5)
         self.combo_reassert.addItem("Every 10 seconds", 10)
         self.combo_reassert.addItem("Every 30 seconds", 30)
         self.combo_reassert.addItem("Every 60 seconds", 60)
         self.combo_reassert.setToolTip("Periodically reapplies MSR and MMIO power limits to defeat OEM EC/DPTF resets")
         self.combo_reassert.currentIndexChanged.connect(self._on_setting_modified)
         grid_pwr.addWidget(lbl_reassert, 4, 0)
-        grid_pwr.addWidget(self.combo_reassert, 4, 1, Qt.AlignLeft)
-
-        layout.addWidget(card_pwr)
+        grid_pwr.addWidget(self.combo_reassert, 4, 1, 1, 2, Qt.AlignLeft)
 
         # ----------------------------------------------------
         # 2. CPU Clock Limits (Step 2)
@@ -519,8 +564,6 @@ class MainWindow(QMainWindow):
         self.clk_advanced_sec.add_widget(clk_adv_widget)
         grid_clk.addWidget(self.clk_advanced_sec, 3, 0, 1, 3)
 
-        layout.addWidget(self.card_clk)
-
         # ----------------------------------------------------
         # 3. Core Management (Step 3)
         # ----------------------------------------------------
@@ -601,8 +644,6 @@ class MainWindow(QMainWindow):
         )
         grid_core.addWidget(self.thread_indicator, 3, 1, 1, 2)
 
-        layout.addWidget(self.card_core)
-
         # ----------------------------------------------------
         # 4. Thermal Target (Step 4)
         # ----------------------------------------------------
@@ -629,7 +670,8 @@ class MainWindow(QMainWindow):
         self.lbl_hw_tcc = QLabel("Hardware Control:")
         self.lbl_hw_tcc.setProperty("class", "FormLabel")
         self.lbl_hw_tcc.setFixedWidth(LABEL_COL_WIDTH)
-        self.chk_hardware_tcc = ToggleSwitch("Use hardware TCC offset (MSR 0x1A2)")
+        self.chk_hardware_tcc = ToggleSwitch("Hardware TCC offset (MSR 0x1A2)")
+        self.chk_hardware_tcc.setToolTip("Use hardware thermal control circuit offset via MSR 0x1A2")
         self.chk_hardware_tcc.setChecked(False)
         self.chk_hardware_tcc.toggled.connect(self._on_setting_modified)
         grid_therm.addWidget(self.lbl_hw_tcc, 2, 0)
@@ -638,8 +680,6 @@ class MainWindow(QMainWindow):
         # Hidden by default until daemon confirms MSR 0x1A2 is writable
         self.lbl_hw_tcc.setVisible(False)
         self.chk_hardware_tcc.setVisible(False)
-
-        layout.addWidget(self.card_therm)
 
         # ----------------------------------------------------
         # 5. Behavior (Intel Turbo Boost toggle, EPP dropdown)
@@ -676,9 +716,7 @@ class MainWindow(QMainWindow):
         self.combo_epp.addItems(["performance", "balance_performance", "balance_power", "power"])
         self.combo_epp.currentIndexChanged.connect(self._on_setting_modified)
         grid_beh.addWidget(lbl_epp, 2, 0)
-        grid_beh.addWidget(self.combo_epp, 2, 1, Qt.AlignLeft)
-
-        layout.addWidget(card_beh)
+        grid_beh.addWidget(self.combo_epp, 2, 1, 1, 2, Qt.AlignLeft)
 
         # ----------------------------------------------------
         # 6. Advanced (BD PROCHOT, collapsed by default, red warning)
@@ -691,12 +729,25 @@ class MainWindow(QMainWindow):
         adv_warn.setWordWrap(True)
         self.advanced_sec.add_widget(adv_warn)
 
-        self.chk_bdprochot = ToggleSwitch("Disable BD PROCHOT (Emergency Throttling Override)")
+        self.chk_bdprochot = ToggleSwitch("Disable BD PROCHOT (Emergency Lock)")
+        self.chk_bdprochot.setToolTip("Disable BD PROCHOT (Emergency Throttling Override)")
         self.chk_bdprochot.setChecked(True)
         self.chk_bdprochot.toggled.connect(self._on_bdprochot_toggled)
         self.advanced_sec.add_widget(self.chk_bdprochot)
 
-        layout.addWidget(self.advanced_sec)
+        self.perf_grid = QGridLayout()
+        self.perf_grid.setContentsMargins(0, 0, 0, 0)
+        self.perf_grid.setHorizontalSpacing(14)
+        self.perf_grid.setVerticalSpacing(14)
+        self.perf_cards = [
+            card_pwr,
+            self.card_clk,
+            self.card_core,
+            self.card_therm,
+            card_beh,
+            self.advanced_sec,
+        ]
+        layout.addLayout(self.perf_grid)
         layout.addStretch()
 
         scroll.setWidget(content)
@@ -802,7 +853,7 @@ class MainWindow(QMainWindow):
         self._prev_disp_mode = self.combo_disp_mode.currentData()
         self.combo_disp_mode.currentIndexChanged.connect(self._on_disp_mode_changed)
         g1.addWidget(lbl_mode, 2, 0)
-        g1.addWidget(self.combo_disp_mode, 2, 1, Qt.AlignLeft)
+        g1.addWidget(self.combo_disp_mode, 2, 1, 1, 2, Qt.AlignLeft)
 
         lbl_scale = QLabel("Display Scale Factor:")
         lbl_scale.setProperty("class", "FormLabel")
@@ -820,9 +871,7 @@ class MainWindow(QMainWindow):
         self._prev_disp_scale = self.combo_disp_scale.currentData()
         self.combo_disp_scale.currentIndexChanged.connect(self._on_disp_scale_changed)
         g1.addWidget(lbl_scale, 3, 0)
-        g1.addWidget(self.combo_disp_scale, 3, 1, Qt.AlignLeft)
-
-        layout.addWidget(card_modes)
+        g1.addWidget(self.combo_disp_scale, 3, 1, 1, 2, Qt.AlignLeft)
 
         # Card 2: Brightness Control with Sun Icons at each end
         card_bright = QFrame()
@@ -871,8 +920,6 @@ class MainWindow(QMainWindow):
         g2.addWidget(bright_ctrl, 1, 1)
         g2.addWidget(self.lbl_bright_val, 1, 2)
 
-        layout.addWidget(card_bright)
-
         # Card 3: Color Range & VRR
         card_color = QFrame()
         card_color.setProperty("class", "CardFrame")
@@ -907,7 +954,7 @@ class MainWindow(QMainWindow):
             self.combo_rgb.setCurrentIndex(0)
         self.combo_rgb.currentIndexChanged.connect(self._on_rgb_range_changed)
         g3.addWidget(lbl_rgb, 1, 0)
-        g3.addWidget(self.combo_rgb, 1, 1, Qt.AlignLeft)
+        g3.addWidget(self.combo_rgb, 1, 1, 1, 2, Qt.AlignLeft)
 
         # VRR Control: Disabled (greyed out) on internal panel with informative tooltip
         lbl_vrr = QLabel("Variable Refresh Rate (VRR):")
@@ -928,9 +975,7 @@ class MainWindow(QMainWindow):
             lbl_vrr.setToolTip(reason)
 
         g3.addWidget(lbl_vrr, 2, 0)
-        g3.addWidget(self.combo_vrr, 2, 1, Qt.AlignLeft)
-
-        layout.addWidget(card_color)
+        g3.addWidget(self.combo_vrr, 2, 1, 1, 2, Qt.AlignLeft)
 
         # Card 4: Color Profile (ICC)
         card_icc = QFrame()
@@ -958,7 +1003,7 @@ class MainWindow(QMainWindow):
         self.combo_icc_source.addItem("Custom ICC Profile", "ICC")
         self.combo_icc_source.currentIndexChanged.connect(self._on_icc_source_changed)
         g4.addWidget(lbl_src, 1, 0)
-        g4.addWidget(self.combo_icc_source, 1, 1, Qt.AlignLeft)
+        g4.addWidget(self.combo_icc_source, 1, 1, 1, 2, Qt.AlignLeft)
 
         # Custom ICC Path row with trailing Browse button
         lbl_path = QLabel("Custom Profile Path:")
@@ -981,7 +1026,12 @@ class MainWindow(QMainWindow):
         g4.addWidget(self.txt_icc_path, 2, 1)
         g4.addWidget(self.btn_browse_icc, 2, 2, Qt.AlignRight)
 
-        layout.addWidget(card_icc)
+        self.disp_grid = QGridLayout()
+        self.disp_grid.setContentsMargins(0, 0, 0, 0)
+        self.disp_grid.setHorizontalSpacing(14)
+        self.disp_grid.setVerticalSpacing(14)
+        self.disp_cards = [card_modes, card_bright, card_color, card_icc]
+        layout.addLayout(self.disp_grid)
         layout.addStretch()
         scroll.setWidget(content)
         return scroll
@@ -1081,7 +1131,6 @@ class MainWindow(QMainWindow):
         cg_layout.addLayout(self._create_spec_row("Mesa Driver Version:", gpu['mesa_version'], accent=True))
         cg_layout.addLayout(self._create_spec_row("Vulkan API Support:", f"{gpu['vulkan_api']} ({gpu['vulkan_driver']})"))
         cg_layout.addLayout(self._create_spec_row("OpenGL Core Profile:", gpu['opengl_version']))
-        layout.addWidget(card_gpu)
 
         # Card 2: Hardware & Motherboard
         card_hw = QFrame()
@@ -1098,7 +1147,6 @@ class MainWindow(QMainWindow):
         ch_layout.addLayout(self._create_spec_row("Processor (CPU):", f"{cpu['model']}"))
         ch_layout.addLayout(self._create_spec_row("Cores & Threads:", f"<b>{cpu['summary']}</b>", accent=True))
         ch_layout.addLayout(self._create_spec_row("Total System Memory:", mem))
-        layout.addWidget(card_hw)
 
         # Card 3: Linux Operating System
         card_os = QFrame()
@@ -1114,8 +1162,13 @@ class MainWindow(QMainWindow):
         co_layout.addLayout(self._create_spec_row("Kernel Release:", f"<b>{os_info['kernel']}</b> ({os_info['arch']})", accent=True))
         co_layout.addLayout(self._create_spec_row("Windowing Session:", os_info['session']))
         co_layout.addLayout(self._create_spec_row("Thermal Subsystem:", f"{os_info['thermald']} + hp-wmi"))
-        layout.addWidget(card_os)
 
+        self.sysinfo_grid = QGridLayout()
+        self.sysinfo_grid.setContentsMargins(0, 0, 0, 0)
+        self.sysinfo_grid.setHorizontalSpacing(14)
+        self.sysinfo_grid.setVerticalSpacing(14)
+        self.sysinfo_cards = [card_gpu, card_hw, card_os]
+        layout.addLayout(self.sysinfo_grid)
         layout.addStretch()
         scroll.setWidget(content)
         return scroll
@@ -1181,8 +1234,6 @@ class MainWindow(QMainWindow):
         grid.addWidget(lbl_th, 2, 0)
         grid.addWidget(self.combo_theme, 2, 1, Qt.AlignLeft)
 
-        layout.addWidget(card)
-
         # Daemon Status & Instructions Card
         d_card = QFrame()
         d_card.setProperty("class", "CardFrame")
@@ -1230,7 +1281,12 @@ class MainWindow(QMainWindow):
         d_cmds.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         d_layout.addWidget(d_cmds)
 
-        layout.addWidget(d_card)
+        self.settings_grid = QGridLayout()
+        self.settings_grid.setContentsMargins(0, 0, 0, 0)
+        self.settings_grid.setHorizontalSpacing(14)
+        self.settings_grid.setVerticalSpacing(14)
+        self.settings_cards = [card, d_card]
+        layout.addLayout(self.settings_grid)
 
         # Log Viewer Section
         self.log_section = CollapsibleSection("Recent System & Daemon Logs", is_expanded=False)
@@ -1312,8 +1368,7 @@ class MainWindow(QMainWindow):
         active_tab = self.tab_stack.currentIndex() if hasattr(self, "tab_stack") else 0
         if hasattr(self, "nav_buttons") and hasattr(self, "nav_items"):
             for idx, (icon_name, _) in enumerate(self.nav_items):
-                c = accent_color if idx == active_tab else text_color
-                self.nav_buttons[idx].setIcon(make_tinted_icon(icon_name, c, 18))
+                self.nav_buttons[idx].setIcon(make_tinted_icon(icon_name, text_color, 18))
 
         # Slider reset buttons
         for slider in [
@@ -1363,13 +1418,12 @@ class MainWindow(QMainWindow):
     def _update_nav_buttons(self, active_index: int):
         pal = self.palette()
         text_color = pal.windowText().color()
-        accent_color = pal.highlight().color()
 
         for idx, btn in enumerate(self.nav_buttons):
             if idx == active_index:
                 btn.setProperty("class", "NavBtnActive")
                 if hasattr(self, "nav_items"):
-                    btn.setIcon(make_tinted_icon(self.nav_items[idx][0], accent_color, 18))
+                    btn.setIcon(make_tinted_icon(self.nav_items[idx][0], text_color, 18))
             else:
                 btn.setProperty("class", "NavBtn")
                 if hasattr(self, "nav_items"):

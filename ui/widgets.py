@@ -37,10 +37,13 @@ from ui.styles import STATUS_WARN, STATUS_CRITICAL
 logger = logging.getLogger(__name__)
 
 BUNDLED_SVGS = {
+    "view-dashboard-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M1.5 1.5h5v5h-5zm8 0h5v3h-5zm0 5h5v8h-5zm-8 2h5v6h-5z"/></svg>""",
+    "video-card-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M1 2h2v1H2v10h1v1H1V2zm3 1h11v8H4V3zm1 1v6h9V4H5zm5 1a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 1a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm-5 6h2v2H5v-2zm3 0h4v2H8v-2z"/></svg>""",
+    "edit-undo-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M6 2L1.5 6.5 6 11V8c3.866 0 7 2.239 7 5 0-4.418-3.134-7-7-7V2z"/></svg>""",
     "utilities-system-monitor-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M1 2C.448 2 0 2.448 0 3v9c0 .552.448 1 1 1h5v1H4v1h8v-1h-2v-1h5c.552 0 1-.448 1-1V3c0-.552-.448-1-1-1H1zm0 1h14v8H1V3zm6 1l-2 3.5L3.5 5 2 6.5 2.7 7.2l.8-.8 1.5 2.5 2-3.5 1.5 2.5.7-.7-1.2-2z"/></svg>""",
     "speedometer-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M8 1a7 7 0 0 0-7 7c0 2.485 1.303 4.673 3.25 5.906L5 12.5A5.5 5.5 0 0 1 2.5 8 5.5 5.5 0 0 1 8 2.5 5.5 5.5 0 0 1 13.5 8a5.5 5.5 0 0 1-2.5 4.5l.75 1.406A7 7 0 0 0 15 8a7 7 0 0 0-7-7zm0 6a1 1 0 0 0-1 1 1 1 0 0 0 .156.531l-2.656 2.657.708.707 2.656-2.656A1 1 0 0 0 8 9a1 1 0 0 0 1-1 1 1 0 0 0-1-1z"/></svg>""",
     "video-display-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M1 2C.448 2 0 2.448 0 3v8c0 .552.448 1 1 1h5v2H4v1h8v-1h-2v-2h5c.552 0 1-.448 1-1V3c0-.552-.448-1-1-1H1zm0 1h14v7H1V3zm4 1.5v4l4-2-4-2z"/></svg>""",
-    "preferences-desktop-display-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M1 2C.448 2 0 2.448 0 3v8c0 .552.448 1 1 1h5v2H4v1h8v-1h-2v-2h5c.552 0 1-.448 1-1V3c0-.552-.448-1-1-1H1zm0 1h14v7H1V3zm2 2h10v1H3V5zm0 2h7v1H3V7z"/></svg>""",
+    "preferences-desktop-display-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M1 2.5C1 1.67 1.67 1 2.5 1h11c.83 0 1.5.67 1.5 1.5v7.5c0 .83-.67 1.5-1.5 1.5H9.5v2h2v1h-7v-1h2v-2H2.5C1.67 11.5 1 10.83 1 10v-7.5zm1.5-.5a.5.5 0 0 0-.5.5v7c0 .28.22.5.5.5h11a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5h-11z"/></svg>""",
     "temperature-cold-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M8 1a2 2 0 0 0-2 2v6.172A3.5 3.5 0 0 0 5 12a3.5 3.5 0 0 0 6 0 3.5 3.5 0 0 0-1-2.828V3a2 2 0 0 0-2-2zm0 1a1 1 0 0 1 1 1v2H7V3a1 1 0 0 1 1-1zm1 4v2H7V6h2zm0 3v.688a2.5 2.5 0 0 1 1.5 2.312 2.5 2.5 0 0 1-5 0A2.5 2.5 0 0 1 7 9.688V9h2z"/></svg>""",
     "help-about-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1a6 6 0 1 1 0 12A6 6 0 0 1 8 2zm-.5 2v2h1V4h-1zm0 3v5h1V7h-1z"/></svg>""",
     "preferences-system-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M7 1v1.062a5 5 0 0 0-1.781.75L4.47 2.06 3.062 3.47l.75.75A5 5 0 0 0 3.062 6H2v2h1.062a5 5 0 0 0 .75 1.781l-.75.75 1.407 1.407.75-.75A5 5 0 0 0 7 11.938V13h2v-1.062a5 5 0 0 0 1.781-.75l.75.75 1.407-1.407-.75-.75A5 5 0 0 0 12.938 8H14V6h-1.062a5 5 0 0 0-.75-1.781l.75-.75L11.53 2.06l-.75.75A5 5 0 0 0 9 2.062V1H7zm1 4a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></svg>""",
@@ -57,10 +60,20 @@ BUNDLED_SVGS = {
 }
 
 
-def make_tinted_icon(theme_name: str, color: QColor, size: int = 16) -> QIcon:
+def make_tinted_icon(theme_name: str, color: QColor, size: int = 16, prefer_bundled: bool = True) -> QIcon:
     """Renders a monochrome symbolic Breeze icon tinted with the specified QColor.
-    Uses QIcon.fromTheme only as an optional override when available in the system theme,
-    falling back to bundled SVG symbolic icons with a warning log if missing or invalid."""
+    Prioritizes bundled SVG symbolic icons for visual consistency and distinct silhouettes,
+    falling back to system QIcon.fromTheme if not bundled."""
+    if prefer_bundled and theme_name in BUNDLED_SVGS:
+        svg_str = BUNDLED_SVGS[theme_name].replace("currentColor", color.name())
+        renderer = QSvgRenderer(QByteArray(svg_str.encode("utf-8")))
+        pix = QPixmap(size, size)
+        pix.fill(Qt.transparent)
+        p = QPainter(pix)
+        renderer.render(p)
+        p.end()
+        return QIcon(pix)
+
     if QIcon.hasThemeIcon(theme_name):
         base_ic = QIcon.fromTheme(theme_name)
         pix = base_ic.pixmap(size, size)
@@ -76,8 +89,6 @@ def make_tinted_icon(theme_name: str, color: QColor, size: int = 16) -> QIcon:
 
     # Fallback to bundled SVG
     if theme_name in BUNDLED_SVGS:
-        if not QIcon.hasThemeIcon(theme_name):
-            logger.warning("Theme icon '%s' failed to resolve; using bundled fallback SVG.", theme_name)
         svg_str = BUNDLED_SVGS[theme_name].replace("currentColor", color.name())
         renderer = QSvgRenderer(QByteArray(svg_str.encode("utf-8")))
         pix = QPixmap(size, size)
@@ -87,7 +98,6 @@ def make_tinted_icon(theme_name: str, color: QColor, size: int = 16) -> QIcon:
         p.end()
         return QIcon(pix)
 
-    logger.warning("Icon '%s' not found in system theme and not bundled.", theme_name)
     return QIcon.fromTheme(theme_name)
 
 
@@ -107,6 +117,9 @@ class ToggleSwitch(QCheckBox):
         w = 42 + (10 + fm.horizontalAdvance(self.text()) if self.text() else 0)
         h = max(24, fm.height())
         return QSize(w, h)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(42, 24)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -147,9 +160,13 @@ class ToggleSwitch(QCheckBox):
             p.setPen(pal.windowText().color() if is_en else pal.placeholderText().color())
             text_x = int(track_x + track_w + 10.0)
             text_rect = self.rect().adjusted(text_x, 0, 0, 0)
-            p.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self.text())
-
         p.end()
+
+
+class MutedCaptionLabel(QLabel):
+    """Muted caption label that does not constrain the minimum width of its container."""
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
 
 
 class MetricRingWidget(QWidget):
@@ -506,6 +523,7 @@ class SliderSetting(QObject):
         # Col 0: Label
         self.title_lbl = QLabel(label)
         self.title_lbl.setProperty("class", "FormLabel")
+        self.title_lbl.setWordWrap(True)
         self.title_lbl.setFixedWidth(label_width)
 
         # Col 1: Slider box
@@ -533,7 +551,7 @@ class SliderSetting(QObject):
 
         # Col 2: Trailing controls right-aligned (SpinBox + Reset)
         self.trailing_widget = QWidget()
-        self.trailing_widget.setFixedWidth(124)
+        self.trailing_widget.setFixedWidth(130)
         trailing = QHBoxLayout(self.trailing_widget)
         trailing.setSpacing(6)
         trailing.setContentsMargins(0, 0, 0, 0)
@@ -542,14 +560,14 @@ class SliderSetting(QObject):
         self.spin.setRange(min_val, max_val)
         self.spin.setValue(default_val)
         self.spin.setSuffix(f" {self.unit}")
-        self.spin.setFixedWidth(84)
+        self.spin.setFixedWidth(96)
         self.spin.setAlignment(Qt.AlignCenter)
         self.spin.setProperty("class", "SettingSpin")
         self.spin.valueChanged.connect(self._on_spin_changed)
         trailing.addWidget(self.spin)
 
         self.btn_reset = QToolButton()
-        self.btn_reset.setIcon(make_tinted_icon("view-refresh-symbolic", QColor("#ffffff"), 14))
+        self.btn_reset.setIcon(make_tinted_icon("edit-undo-symbolic", QColor("#ffffff"), 14))
         self.btn_reset.setToolTip(f"Reset to default ({default_val} {self.unit})")
         self.btn_reset.setProperty("class", "SettingReset")
         self.btn_reset.setCursor(Qt.PointingHandCursor)
@@ -562,7 +580,7 @@ class SliderSetting(QObject):
         grid.addWidget(self.trailing_widget, row, 2, 1, 1, Qt.AlignVCenter | Qt.AlignRight)
 
     def recolor_icon(self, color: QColor):
-        self.btn_reset.setIcon(make_tinted_icon("view-refresh-symbolic", color, 14))
+        self.btn_reset.setIcon(make_tinted_icon("edit-undo-symbolic", color, 14))
 
     def _on_slider_changed(self, val: int):
         if self._block_signals:
@@ -634,6 +652,7 @@ class FreqSliderSetting(QObject):
         # Col 0: Label
         self.title_lbl = QLabel(label)
         self.title_lbl.setProperty("class", "FormLabel")
+        self.title_lbl.setWordWrap(True)
         self.title_lbl.setFixedWidth(label_width)
 
         # Col 1: Slider box
@@ -655,22 +674,22 @@ class FreqSliderSetting(QObject):
         self.min_lbl = QLabel(f"{min_mhz / 1000.0:.1f} GHz")
         self.min_lbl.setProperty("class", "Footnote")
         range_row.addWidget(self.min_lbl)
-
-        # Live requested vs actual readout under slider
-        self.status_lbl = QLabel(f"Cap: {default_mhz / 1000.0:.2f} GHz  •  Actual Avg: -- GHz")
-        self.status_lbl.setProperty("class", "Footnote")
-        self.status_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
-        self.status_lbl.setAlignment(Qt.AlignCenter)
-        range_row.addWidget(self.status_lbl, alignment=Qt.AlignCenter)
-
+        range_row.addStretch()
         self.max_lbl = QLabel(f"{max_mhz / 1000.0:.1f} GHz")
         self.max_lbl.setProperty("class", "Footnote")
-        range_row.addWidget(self.max_lbl, alignment=Qt.AlignRight)
+        range_row.addWidget(self.max_lbl)
         slider_box.addLayout(range_row)
+
+        # Live requested vs actual readout on its own line below the track
+        self.status_lbl = MutedCaptionLabel(f"Cap: {default_mhz / 1000.0:.2f} GHz • Avg: --")
+        self.status_lbl.setProperty("class", "Footnote")
+        self.status_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 10px;")
+        self.status_lbl.setAlignment(Qt.AlignCenter)
+        slider_box.addWidget(self.status_lbl)
 
         # Col 2: Trailing controls right-aligned (DoubleSpinBox in GHz + Reset)
         self.trailing_widget = QWidget()
-        self.trailing_widget.setFixedWidth(124)
+        self.trailing_widget.setFixedWidth(130)
         trailing = QHBoxLayout(self.trailing_widget)
         trailing.setSpacing(6)
         trailing.setContentsMargins(0, 0, 0, 0)
@@ -681,14 +700,14 @@ class FreqSliderSetting(QObject):
         self.spin.setSingleStep(step_mhz / 1000.0)
         self.spin.setValue(default_mhz / 1000.0)
         self.spin.setSuffix(" GHz")
-        self.spin.setFixedWidth(84)
+        self.spin.setFixedWidth(96)
         self.spin.setAlignment(Qt.AlignCenter)
         self.spin.setProperty("class", "SettingSpin")
         self.spin.valueChanged.connect(self._on_spin_changed)
         trailing.addWidget(self.spin)
 
         self.btn_reset = QToolButton()
-        self.btn_reset.setIcon(make_tinted_icon("view-refresh-symbolic", QColor("#ffffff"), 14))
+        self.btn_reset.setIcon(make_tinted_icon("edit-undo-symbolic", QColor("#ffffff"), 14))
         self.btn_reset.setToolTip(f"Reset to default ({default_mhz / 1000.0:.2f} GHz)")
         self.btn_reset.setProperty("class", "SettingReset")
         self.btn_reset.setCursor(Qt.PointingHandCursor)
@@ -701,7 +720,7 @@ class FreqSliderSetting(QObject):
         grid.addWidget(self.trailing_widget, row, 2, 1, 1, Qt.AlignVCenter | Qt.AlignRight)
 
     def recolor_icon(self, color: QColor):
-        self.btn_reset.setIcon(make_tinted_icon("view-refresh-symbolic", color, 14))
+        self.btn_reset.setIcon(make_tinted_icon("edit-undo-symbolic", color, 14))
 
     def _on_slider_changed(self, val: int):
         if self._block_signals:
@@ -731,9 +750,9 @@ class FreqSliderSetting(QObject):
         cap_ghz = self.get_value() / 1000.0
         if act_mhz is not None and act_mhz > 0:
             act_ghz = act_mhz / 1000.0
-            self.status_lbl.setText(f"Cap: {cap_ghz:.2f} GHz  •  Actual Avg: {act_ghz:.2f} GHz")
+            self.status_lbl.setText(f"Cap: {cap_ghz:.2f} • Avg: {act_ghz:.2f} GHz")
         else:
-            self.status_lbl.setText(f"Cap: {cap_ghz:.2f} GHz  •  Actual Avg: Idle")
+            self.status_lbl.setText(f"Cap: {cap_ghz:.2f} GHz • Idle")
 
     def update_actual_freq(self, act_mhz: int = None):
         self._update_status_lbl(act_mhz)
@@ -781,6 +800,7 @@ class ThermalSliderSetting(QObject):
         # Col 0: Label
         self.title_lbl = QLabel(label)
         self.title_lbl.setProperty("class", "FormLabel")
+        self.title_lbl.setWordWrap(True)
         self.title_lbl.setFixedWidth(label_width)
 
         # Col 1: Slider box
@@ -800,22 +820,22 @@ class ThermalSliderSetting(QObject):
         self.min_lbl = QLabel("Off")
         self.min_lbl.setProperty("class", "Footnote")
         range_row.addWidget(self.min_lbl)
-
-        # Live thermal state label
-        self.status_lbl = QLabel("State: Holding  •  Target: 90°C")
-        self.status_lbl.setProperty("class", "Footnote")
-        self.status_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
-        self.status_lbl.setAlignment(Qt.AlignCenter)
-        range_row.addWidget(self.status_lbl, alignment=Qt.AlignCenter)
-
+        range_row.addStretch()
         self.max_lbl = QLabel("100°C")
         self.max_lbl.setProperty("class", "Footnote")
-        range_row.addWidget(self.max_lbl, alignment=Qt.AlignRight)
+        range_row.addWidget(self.max_lbl)
         slider_box.addLayout(range_row)
+
+        # Live thermal state label on its own line below the track
+        self.status_lbl = MutedCaptionLabel("Holding • Target: 90°C")
+        self.status_lbl.setProperty("class", "Footnote")
+        self.status_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 10px;")
+        self.status_lbl.setAlignment(Qt.AlignCenter)
+        slider_box.addWidget(self.status_lbl)
 
         # Col 2: Trailing controls right-aligned (SpinBox + Reset)
         self.trailing_widget = QWidget()
-        self.trailing_widget.setFixedWidth(124)
+        self.trailing_widget.setFixedWidth(130)
         trailing = QHBoxLayout(self.trailing_widget)
         trailing.setSpacing(6)
         trailing.setContentsMargins(0, 0, 0, 0)
@@ -825,14 +845,14 @@ class ThermalSliderSetting(QObject):
         self.spin.setSpecialValueText("Off")
         self.spin.setValue(default_val)
         self.spin.setSuffix(" °C")
-        self.spin.setFixedWidth(84)
+        self.spin.setFixedWidth(96)
         self.spin.setAlignment(Qt.AlignCenter)
         self.spin.setProperty("class", "SettingSpin")
         self.spin.valueChanged.connect(self._on_spin_changed)
         trailing.addWidget(self.spin)
 
         self.btn_reset = QToolButton()
-        self.btn_reset.setIcon(make_tinted_icon("view-refresh-symbolic", QColor("#ffffff"), 14))
+        self.btn_reset.setIcon(make_tinted_icon("edit-undo-symbolic", QColor("#ffffff"), 14))
         self.btn_reset.setToolTip(f"Reset to default ({default_val}°C)")
         self.btn_reset.setProperty("class", "SettingReset")
         self.btn_reset.setCursor(Qt.PointingHandCursor)
@@ -845,7 +865,7 @@ class ThermalSliderSetting(QObject):
         grid.addWidget(self.trailing_widget, row, 2, 1, 1, Qt.AlignVCenter | Qt.AlignRight)
 
     def recolor_icon(self, color: QColor):
-        self.btn_reset.setIcon(make_tinted_icon("view-refresh-symbolic", color, 14))
+        self.btn_reset.setIcon(make_tinted_icon("edit-undo-symbolic", color, 14))
 
     def _on_slider_changed(self, val: int):
         if self._block_signals:
@@ -875,10 +895,10 @@ class ThermalSliderSetting(QObject):
         state = getattr(self, "_last_state", "Holding")
         pl1 = getattr(self, "_last_pl1", None)
         if val <= 69:
-            self.status_lbl.setText("State: Off (Thermal target disabled)")
+            self.status_lbl.setText("Off (Disabled)")
         else:
-            pl1_str = f"  •  PL1: {pl1:.0f}W" if pl1 else ""
-            self.status_lbl.setText(f"State: {state}  •  Target: {val}°C{pl1_str}")
+            pl1_str = f" • PL1: {pl1:.0f}W" if pl1 else ""
+            self.status_lbl.setText(f"{state} • Target: {val}°C{pl1_str}")
 
     def get_value(self) -> int:
         return self.slider.value()
