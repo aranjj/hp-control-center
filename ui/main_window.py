@@ -1,15 +1,15 @@
 """
 Main Application Window for HP Performance Control Center
 Layout:
-- Left collapsible sidebar (Dashboard, Performance, Graphics, Cooling, Settings)
+- Left collapsible sidebar (Dashboard, Performance, Graphics, Display, Cooling, System Info, Settings)
 - Persistent top bar: Profile segmented control (Ultra Gaming, Balanced, Eco, Custom)
 - Persistent bottom status bar: Daemon dot, AC state, mini telemetry, unsaved count, Reset, Apply
+Follows active KDE / Qt system palette in real-time.
 """
 
 import os
 import json
 import socket
-import glob
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -32,14 +32,20 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QSlider,
 )
-from PySide6.QtCore import Qt, QTimer, QSettings
+from PySide6.QtCore import Qt, QTimer, QSettings, QEvent
 from PySide6.QtGui import QIcon
 
 from core.telemetry import TelemetryReader
-from core.profiles import ProfileManager, DEFAULT_PROFILES
+from core.profiles import ProfileManager
 from core.display import DisplayManager
 from core.sysinfo import SystemInfoReader
-from ui.styles import CYBER_DARK_THEME, THEMES
+from ui.styles import (
+    STATUS_OK,
+    STATUS_WARN,
+    STATUS_CRITICAL,
+    NATIVE_PALETTE_THEME,
+    THEMES,
+)
 from ui.widgets import (
     StatCard,
     SliderSetting,
@@ -54,7 +60,7 @@ SOCKET_PATH = "/tmp/hp_control_center.sock"
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("HP Performance Control Center • i7-1255U")
+        self.setWindowTitle("HP Performance Control Center - i7-1255U")
 
         self.telemetry = TelemetryReader()
         self.profile_mgr = ProfileManager()
@@ -77,9 +83,9 @@ class MainWindow(QMainWindow):
         else:
             self.resize(880, 840)
 
-        saved_theme = self.settings.value("theme", "Cyberpunk Dark (Default)")
+        saved_theme = self.settings.value("theme", "Follow System (KDE / Qt Palette)")
         if saved_theme not in THEMES:
-            saved_theme = "Cyberpunk Dark (Default)"
+            saved_theme = "Follow System (KDE / Qt Palette)"
         self.current_theme = saved_theme
 
         self._setup_ui()
@@ -105,6 +111,17 @@ class MainWindow(QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         super().closeEvent(event)
 
+    def changeEvent(self, event):
+        """React live to KDE Plasma / Qt system palette changes at runtime."""
+        if event.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange, QEvent.Type.ThemeChange):
+            if not getattr(self, "_in_palette_change", False):
+                self._in_palette_change = True
+                try:
+                    self._apply_theme()
+                finally:
+                    self._in_palette_change = False
+        super().changeEvent(event)
+
     def _setup_ui(self):
         root = QWidget()
         self.setCentralWidget(root)
@@ -123,31 +140,33 @@ class MainWindow(QMainWindow):
         sidebar_layout.setContentsMargins(10, 14, 10, 14)
         sidebar_layout.setSpacing(6)
 
-        # Sidebar Header / Collapse Toggle
-        self.btn_collapse = QPushButton("☰  Menu")
+        # Sidebar Header / Collapse Toggle with Breeze icon
+        self.btn_collapse = QPushButton("Menu")
+        self.btn_collapse.setIcon(QIcon.fromTheme("application-menu"))
         self.btn_collapse.setProperty("class", "MenuCollapseBtn")
         self.btn_collapse.clicked.connect(self._toggle_sidebar)
         sidebar_layout.addWidget(self.btn_collapse)
 
         # Brand subtitle
         self.brand_lbl = QLabel("HP 15 CONTROL")
-        self.brand_lbl.setStyleSheet("color: #4a5568; font-size: 10px; font-weight: bold; letter-spacing: 1px; padding-left: 12px;")
+        self.brand_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 10px; font-weight: bold; letter-spacing: 1px; padding-left: 12px;")
         sidebar_layout.addWidget(self.brand_lbl)
         sidebar_layout.addSpacing(6)
 
-        # Navigation Buttons
+        # Navigation Buttons with Breeze icon names (no emojis)
         self.nav_buttons = []
         nav_items = [
-            ("📊", "Dashboard"),
-            ("⚡", "Performance"),
-            ("🎮", "Graphics"),
-            ("🖥️", "Display"),
-            ("❄️", "Cooling"),
-            ("ℹ️", "System Info"),
-            ("⚙️", "Settings"),
+            ("utilities-system-monitor", "Dashboard"),
+            ("speedometer", "Performance"),
+            ("video-display", "Graphics"),
+            ("preferences-desktop-display", "Display"),
+            ("temperature-cold", "Cooling"),
+            ("help-about", "System Info"),
+            ("preferences-system", "Settings"),
         ]
-        for idx, (icon, text) in enumerate(nav_items):
-            btn = QPushButton(f"{icon}  {text}")
+        for idx, (icon_name, text) in enumerate(nav_items):
+            btn = QPushButton(f"  {text}")
+            btn.setIcon(QIcon.fromTheme(icon_name))
             btn.setProperty("class", "NavBtn")
             btn.clicked.connect(lambda checked, i=idx: self._switch_tab(i))
             self.nav_buttons.append(btn)
@@ -157,7 +176,7 @@ class MainWindow(QMainWindow):
 
         # Mini footer in sidebar
         self.side_footer_lbl = QLabel("v0.2-alpha")
-        self.side_footer_lbl.setStyleSheet("color: #4a5568; font-size: 10px; padding-left: 12px;")
+        self.side_footer_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 10px; padding-left: 12px;")
         sidebar_layout.addWidget(self.side_footer_lbl)
 
         root_layout.addWidget(self.sidebar_frame)
@@ -189,11 +208,11 @@ class MainWindow(QMainWindow):
 
         top_bar.addStretch()
 
-        # Power Source Badge
-        self.power_src_badge = QLabel("🔌 AC POWER")
+        # Power Source Badge (Semantic status indicator, native palette background)
+        self.power_src_badge = QLabel("AC POWER")
         self.power_src_badge.setStyleSheet(
-            "background-color: #1a2333; color: #00e5ff; font-weight: bold; "
-            "padding: 6px 12px; border-radius: 6px; border: 1px solid #23354d; font-size: 11px;"
+            f"background-color: palette(base); color: {STATUS_OK}; font-weight: bold; "
+            "padding: 6px 12px; border-radius: 6px; border: 1px solid palette(mid); font-size: 11px;"
         )
         top_bar.addWidget(self.power_src_badge)
 
@@ -205,8 +224,8 @@ class MainWindow(QMainWindow):
         self.warning_banner.setVisible(False)
         w_layout = QHBoxLayout(self.warning_banner)
         w_layout.setContentsMargins(10, 6, 10, 6)
-        self.warning_lbl = QLabel("⚠️ HIGH TEMPERATURE ALERT: Package temperature is above 90°C! Verify fan cooling.")
-        self.warning_lbl.setStyleSheet("color: #ff3366; font-weight: bold;")
+        self.warning_lbl = QLabel("HIGH TEMPERATURE ALERT: Package temperature is above 90°C! Verify fan cooling.")
+        self.warning_lbl.setStyleSheet(f"color: {STATUS_CRITICAL}; font-weight: bold;")
         w_layout.addWidget(self.warning_lbl)
         content_layout.addWidget(self.warning_banner)
 
@@ -240,23 +259,23 @@ class MainWindow(QMainWindow):
 
         # Daemon Dot + Status Text
         self.daemon_dot = QLabel("●")
-        self.daemon_dot.setStyleSheet("color: #ff3366; font-size: 14px;")
+        self.daemon_dot.setStyleSheet(f"color: {STATUS_CRITICAL}; font-size: 14px;")
         bottom_bar.addWidget(self.daemon_dot)
 
         self.daemon_lbl = QLabel("Daemon Offline")
-        self.daemon_lbl.setStyleSheet("font-weight: 600; color: #a0aec0; font-size: 12px;")
+        self.daemon_lbl.setStyleSheet("font-weight: 600; color: palette(window-text); font-size: 12px;")
         bottom_bar.addWidget(self.daemon_lbl)
 
         # Mini Live Telemetry Readout
-        self.mini_telemetry_lbl = QLabel("•  --°C  |  --W  |  -- RPM")
-        self.mini_telemetry_lbl.setStyleSheet("color: #718096; font-size: 11px; font-weight: 500;")
+        self.mini_telemetry_lbl = QLabel("--°C  |  --W  |  -- RPM")
+        self.mini_telemetry_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 11px; font-weight: 500;")
         bottom_bar.addWidget(self.mini_telemetry_lbl)
 
         bottom_bar.addStretch()
 
         # "N Unsaved Changes" Label
         self.unsaved_lbl = QLabel("0 unsaved changes")
-        self.unsaved_lbl.setStyleSheet("color: #718096; font-size: 11px; font-style: italic;")
+        self.unsaved_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 11px; font-style: italic;")
         bottom_bar.addWidget(self.unsaved_lbl)
 
         # Reset to Defaults Button
@@ -287,36 +306,36 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
 
         dash_title = QLabel("LIVE TELEMETRY HUD")
-        dash_title.setStyleSheet("font-size: 12px; font-weight: bold; color: #718096; letter-spacing: 1px;")
+        dash_title.setStyleSheet("font-size: 12px; font-weight: bold; color: palette(placeholder-text); letter-spacing: 1px;")
         layout.addWidget(dash_title)
 
         hud_grid = QGridLayout()
         hud_grid.setSpacing(12)
 
-        # Tile 1: Package Power with Throttle Reason
-        self.card_power = StatCard("Package Power", "0.0", "W", "Target: 25.0 W", sparkline_color="#00e5ff")
+        # Tile 1: Package Power with Throttle Reason (Uses system accent)
+        self.card_power = StatCard("Package Power", "0.0", "W", "Target: 25.0 W")
         hud_grid.addWidget(self.card_power, 0, 0)
 
-        # Tile 2: Package Temp
-        self.card_temp = StatCard("Package Temp", "--", "°C", "Thermal: Normal", sparkline_color="#ff9100")
+        # Tile 2: Package Temp (warn at 80°C, crit at 90°C)
+        self.card_temp = StatCard("Package Temp", "--", "°C", "Thermal: Normal", warn_threshold=80.0, crit_threshold=90.0)
         hud_grid.addWidget(self.card_temp, 0, 1)
 
-        # Tile 3: Cooling Fan
-        self.card_fan = StatCard("Cooling Fan", "--", "RPM", "HP EC Automatic", sparkline_color="#00e676")
+        # Tile 3: Cooling Fan (Uses system accent)
+        self.card_fan = StatCard("Cooling Fan", "--", "RPM", "HP EC Automatic")
         hud_grid.addWidget(self.card_fan, 0, 2)
 
-        # Tile 4: Iris Xe Clock
-        self.card_gpu = StatCard("Iris Xe Clock", "--", "MHz", "State: Active", sparkline_color="#b388ff")
+        # Tile 4: Iris Xe Clock (Uses system accent)
+        self.card_gpu = StatCard("Iris Xe Clock", "--", "MHz", "State: Active")
         hud_grid.addWidget(self.card_gpu, 1, 0)
 
-        # Tile 5: P-Core avg clock (dynamic threads count)
+        # Tile 5: P-Core avg clock (Uses system accent)
         p_count = len(self.telemetry.p_core_threads)
-        self.card_pcore = StatCard("P-Cores (Avg)", "--", "GHz", f"{p_count} Threads (cpu0-{p_count-1})", sparkline_color="#00b0ff")
+        self.card_pcore = StatCard("P-Cores (Avg)", "--", "GHz", f"{p_count} Threads (cpu0-{p_count-1})")
         hud_grid.addWidget(self.card_pcore, 1, 1)
 
-        # Tile 6: E-Core avg clock (dynamic threads count)
+        # Tile 6: E-Core avg clock (Uses system accent)
         e_count = len(self.telemetry.e_core_threads)
-        self.card_ecore = StatCard("E-Cores (Avg)", "--", "GHz", f"{e_count} Threads", sparkline_color="#26c6da")
+        self.card_ecore = StatCard("E-Cores (Avg)", "--", "GHz", f"{e_count} Threads")
         hud_grid.addWidget(self.card_ecore, 1, 2)
 
         layout.addLayout(hud_grid)
@@ -336,8 +355,8 @@ class MainWindow(QMainWindow):
         c_layout = QVBoxLayout(card)
         c_layout.setSpacing(12)
 
-        title = QLabel("⚡ Intel RAPL & MMIO Turbo Power Limits")
-        title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        title = QLabel("Intel RAPL & MMIO Turbo Power Limits")
+        title.setStyleSheet("font-size: 14px; font-weight: bold; color: palette(window-text);")
         c_layout.addWidget(title)
 
         # Fixed-width, full-width sliders with explicit ranges and per-slider reset
@@ -364,7 +383,7 @@ class MainWindow(QMainWindow):
 
         row_turbo.addSpacing(20)
         epp_lbl = QLabel("Energy Bias (EPP):")
-        epp_lbl.setStyleSheet("font-weight: 600;")
+        epp_lbl.setStyleSheet("font-weight: 600; color: palette(window-text);")
         self.combo_epp = QComboBox()
         self.combo_epp.addItems(["performance", "balance_performance", "balance_power", "power"])
         self.combo_epp.currentIndexChanged.connect(self._on_setting_modified)
@@ -378,9 +397,9 @@ class MainWindow(QMainWindow):
         # Advanced Collapsible Section for BD PROCHOT
         self.advanced_sec = CollapsibleSection("Advanced Settings (BD PROCHOT)", is_expanded=False)
 
-        adv_warn = QLabel("⚠️ WARNING: BD PROCHOT (Bi-directional Processor Hot) protects VRMs from overheating.\n"
+        adv_warn = QLabel("WARNING: BD PROCHOT (Bi-directional Processor Hot) protects VRMs from overheating.\n"
                           "Disabling it prevents the 400 MHz lockout bug, but should only be used if temperatures are monitored.")
-        adv_warn.setStyleSheet("color: #ff3366; font-size: 11px; font-weight: 500;")
+        adv_warn.setStyleSheet(f"color: {STATUS_CRITICAL}; font-size: 11px; font-weight: 500;")
         adv_warn.setWordWrap(True)
         self.advanced_sec.add_widget(adv_warn)
 
@@ -408,12 +427,12 @@ class MainWindow(QMainWindow):
         c_layout = QVBoxLayout(card)
         c_layout.setSpacing(12)
 
-        title = QLabel("🎮 Intel Iris Xe Graphics Tuning (Linux xe driver)")
-        title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        title = QLabel("Intel Iris Xe Graphics Tuning (Linux xe driver)")
+        title.setStyleSheet("font-size: 14px; font-weight: bold; color: palette(window-text);")
         c_layout.addWidget(title)
 
         desc = QLabel("Set GPU frequency floors to eliminate frame-time spikes and stutter in 3D gaming.")
-        desc.setStyleSheet("color: #718096; font-size: 12px;")
+        desc.setStyleSheet("color: palette(placeholder-text); font-size: 12px;")
         c_layout.addWidget(desc)
 
         self.slider_gpu_min = SliderSetting("Minimum GPU Frequency", 100, 1250, 800, "MHz")
@@ -426,7 +445,7 @@ class MainWindow(QMainWindow):
 
         p_row = QHBoxLayout()
         p_lbl = QLabel("GPU Power Mode:")
-        p_lbl.setStyleSheet("font-weight: 600;")
+        p_lbl.setStyleSheet("font-weight: 600; color: palette(window-text);")
         self.combo_gpu_power = QComboBox()
         self.combo_gpu_power.addItems(["base", "power_saving"])
         self.combo_gpu_power.currentIndexChanged.connect(self._on_setting_modified)
@@ -458,12 +477,12 @@ class MainWindow(QMainWindow):
         c1_layout = QVBoxLayout(card_modes)
         c1_layout.setSpacing(12)
 
-        c1_title = QLabel("🖥️ Display Resolution, Refresh Rate & Scaling")
-        c1_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        c1_title = QLabel("Display Resolution, Refresh Rate & Scaling")
+        c1_title.setStyleSheet("font-size: 14px; font-weight: bold; color: palette(window-text);")
         c1_layout.addWidget(c1_title)
 
         panel_info = QLabel(f"Panel: {self._disp_output_name} (Active Laptop Display)")
-        panel_info.setStyleSheet("color: #718096; font-size: 12px; font-weight: 500;")
+        panel_info.setStyleSheet("color: palette(placeholder-text); font-size: 12px; font-weight: 500;")
         c1_layout.addWidget(panel_info)
 
         # Mode row
@@ -524,8 +543,8 @@ class MainWindow(QMainWindow):
         c2_layout = QVBoxLayout(card_bright)
         c2_layout.setSpacing(10)
 
-        c2_title = QLabel("☀️ Panel Brightness")
-        c2_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        c2_title = QLabel("Panel Brightness")
+        c2_title.setStyleSheet("font-size: 14px; font-weight: bold; color: palette(window-text);")
         c2_layout.addWidget(c2_title)
 
         bright_row = QHBoxLayout()
@@ -549,8 +568,8 @@ class MainWindow(QMainWindow):
         c3_layout = QVBoxLayout(card_color)
         c3_layout.setSpacing(12)
 
-        c3_title = QLabel("🎨 Advanced Color Range & VRR")
-        c3_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        c3_title = QLabel("Advanced Color Range & VRR")
+        c3_title.setStyleSheet("font-size: 14px; font-weight: bold; color: palette(window-text);")
         c3_layout.addWidget(c3_title)
 
         # RGB Dynamic Range
@@ -604,8 +623,8 @@ class MainWindow(QMainWindow):
         if not vrr_capable:
             self.combo_vrr.setEnabled(False)
             btn_apply_vrr.setEnabled(False)
-            vrr_note = QLabel("ℹ️ VRR / Adaptive Sync is not supported by the internal eDP panel. Supported on compatible external FreeSync/G-Sync displays via DP/HDMI.")
-            vrr_note.setStyleSheet("color: #718096; font-size: 11px; font-style: italic;")
+            vrr_note = QLabel("VRR / Adaptive Sync is not supported by the internal eDP panel. Supported on compatible external FreeSync/G-Sync displays via DP/HDMI.")
+            vrr_note.setStyleSheet("color: palette(placeholder-text); font-size: 11px; font-style: italic;")
             c3_layout.addWidget(vrr_note)
 
         layout.addWidget(card_color)
@@ -616,8 +635,8 @@ class MainWindow(QMainWindow):
         c4_layout = QVBoxLayout(card_icc)
         c4_layout.setSpacing(10)
 
-        c4_title = QLabel("📄 ICC Color Profile")
-        c4_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        c4_title = QLabel("ICC Color Profile")
+        c4_title.setStyleSheet("font-size: 14px; font-weight: bold; color: palette(window-text);")
         c4_layout.addWidget(c4_title)
 
         icc_source_row = QHBoxLayout()
@@ -650,7 +669,8 @@ class MainWindow(QMainWindow):
             self.txt_icc_path.setEnabled(True)
             self.combo_icc_source.setCurrentIndex(2)
 
-        btn_browse_icc = QPushButton("📁 Browse...")
+        btn_browse_icc = QPushButton("Browse...")
+        btn_browse_icc.setIcon(QIcon.fromTheme("document-open"))
         btn_browse_icc.setProperty("class", "SecondaryButton")
         btn_browse_icc.clicked.connect(self._browse_icc_file)
 
@@ -680,8 +700,8 @@ class MainWindow(QMainWindow):
         c_layout = QVBoxLayout(card)
         c_layout.setSpacing(10)
 
-        title = QLabel("❄️ Cooling & Thermal Management")
-        title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        title = QLabel("Cooling & Thermal Management")
+        title.setStyleSheet("font-size: 14px; font-weight: bold; color: palette(window-text);")
         c_layout.addWidget(title)
 
         self.cooling_fan_lbl = QLabel("Fan Mode: HP EC Automatic (Hardware Governed)")
@@ -692,20 +712,20 @@ class MainWindow(QMainWindow):
             "HP 15 chassis firmware hardwires fan tachometer control to internal EC thermal sensors.\n"
             "Fan automatically scales up to ~3,500+ RPM when sustained 25W load is active."
         )
-        info.setStyleSheet("color: #718096; font-size: 12px;")
+        info.setStyleSheet("color: palette(placeholder-text); font-size: 12px;")
         c_layout.addWidget(info)
 
         c_layout.addSpacing(10)
         placeholder_title = QLabel("Custom Fan Curve Editor (Placeholder)")
-        placeholder_title.setStyleSheet("color: #4a5568; font-weight: bold; font-size: 12px;")
+        placeholder_title.setStyleSheet("color: palette(placeholder-text); font-weight: bold; font-size: 12px;")
         c_layout.addWidget(placeholder_title)
 
         placeholder_box = QFrame()
-        placeholder_box.setStyleSheet("background-color: #0f131a; border: 1px dashed #233147; border-radius: 8px; padding: 20px;")
+        placeholder_box.setStyleSheet("background-color: palette(alternate-base); border: 1px dashed palette(mid); border-radius: 8px; padding: 20px;")
         p_box_layout = QVBoxLayout(placeholder_box)
         p_msg = QLabel("Future Feature: NoteBook Fan Control (NBFC) / Direct EC Register Curve Hook")
         p_msg.setAlignment(Qt.AlignCenter)
-        p_msg.setStyleSheet("color: #4a5568; font-style: italic;")
+        p_msg.setStyleSheet("color: palette(placeholder-text); font-style: italic;")
         p_box_layout.addWidget(p_msg)
         c_layout.addWidget(placeholder_box)
 
@@ -724,17 +744,18 @@ class MainWindow(QMainWindow):
         # Header with Copy Button
         header_row = QHBoxLayout()
         title_box = QVBoxLayout()
-        s_title = QLabel("ℹ️ System & Hardware Diagnostics")
-        s_title.setStyleSheet("font-size: 15px; font-weight: bold; color: #ffffff;")
+        s_title = QLabel("System & Hardware Diagnostics")
+        s_title.setStyleSheet("font-size: 15px; font-weight: bold; color: palette(window-text);")
         s_desc = QLabel("Detailed hardware topology, kernel driver, Vulkan, and Mesa stack specifications")
-        s_desc.setStyleSheet("color: #718096; font-size: 12px;")
+        s_desc.setStyleSheet("color: palette(placeholder-text); font-size: 12px;")
         title_box.addWidget(s_title)
         title_box.addWidget(s_desc)
         header_row.addLayout(title_box)
         header_row.addStretch()
 
-        btn_copy_report = QPushButton("📋 Copy System Report")
-        btn_copy_report.setProperty("class", "ApplyButton")
+        btn_copy_report = QPushButton("Copy System Report")
+        btn_copy_report.setIcon(QIcon.fromTheme("edit-copy"))
+        btn_copy_report.setProperty("class", "SecondaryButton")
         btn_copy_report.clicked.connect(lambda: self._copy_to_clipboard(
             self.sysinfo_reader.generate_markdown_report(), btn_copy_report
         ))
@@ -753,8 +774,8 @@ class MainWindow(QMainWindow):
         cg_layout = QVBoxLayout(card_gpu)
         cg_layout.setSpacing(10)
 
-        cg_title = QLabel("🎮 Graphics & Driver Stack")
-        cg_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        cg_title = QLabel("Graphics & Driver Stack")
+        cg_title.setStyleSheet("font-size: 14px; font-weight: bold; color: palette(window-text);")
         cg_layout.addWidget(cg_title)
 
         cg_layout.addLayout(self._create_spec_row("Active Kernel Driver:", f"<b>{gpu['kernel_driver']}</b> (Modern Intel Xe KMD)", accent=True))
@@ -772,8 +793,8 @@ class MainWindow(QMainWindow):
         ch_layout = QVBoxLayout(card_hw)
         ch_layout.setSpacing(10)
 
-        ch_title = QLabel("💻 Hardware & Chassis")
-        ch_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        ch_title = QLabel("Hardware & Chassis")
+        ch_title.setStyleSheet("font-size: 14px; font-weight: bold; color: palette(window-text);")
         ch_layout.addWidget(ch_title)
 
         ch_layout.addLayout(self._create_spec_row("Device Model:", f"{dmi['sys_vendor']} {dmi['product_name']}"))
@@ -789,8 +810,8 @@ class MainWindow(QMainWindow):
         co_layout = QVBoxLayout(card_os)
         co_layout.setSpacing(10)
 
-        co_title = QLabel("🐧 Operating System & Environment")
-        co_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        co_title = QLabel("Operating System & Environment")
+        co_title.setStyleSheet("font-size: 14px; font-weight: bold; color: palette(window-text);")
         co_layout.addWidget(co_title)
 
         co_layout.addLayout(self._create_spec_row("Linux Distribution:", os_info['distro']))
@@ -806,12 +827,12 @@ class MainWindow(QMainWindow):
     def _create_spec_row(self, label: str, value: str, accent: bool = False) -> QHBoxLayout:
         row = QHBoxLayout()
         l_lbl = QLabel(label)
-        l_lbl.setStyleSheet("color: #718096; font-size: 12px; min-width: 180px; font-weight: 500;")
+        l_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 12px; min-width: 180px; font-weight: 500;")
         v_lbl = QLabel(value)
         if accent:
             v_lbl.setProperty("class", "CoolingFanAccent")
         else:
-            v_lbl.setStyleSheet("color: #ffffff; font-size: 12px;")
+            v_lbl.setStyleSheet("color: palette(window-text); font-size: 12px;")
         v_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
         row.addWidget(l_lbl)
         row.addWidget(v_lbl)
@@ -894,8 +915,8 @@ class MainWindow(QMainWindow):
         c_layout = QVBoxLayout(card)
         c_layout.setSpacing(12)
 
-        title = QLabel("⚙️ Application Settings")
-        title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        title = QLabel("Application Settings")
+        title.setStyleSheet("font-size: 14px; font-weight: bold; color: palette(window-text);")
         c_layout.addWidget(title)
 
         # Autostart Toggle
@@ -907,7 +928,7 @@ class MainWindow(QMainWindow):
         # Theme selector
         theme_row = QHBoxLayout()
         theme_lbl = QLabel("Color Theme:")
-        theme_lbl.setStyleSheet("font-weight: 600;")
+        theme_lbl.setStyleSheet("font-weight: 600; color: palette(window-text);")
         self.combo_theme = QComboBox()
         self.combo_theme.addItems(list(THEMES.keys()))
         self.combo_theme.setCurrentText(self.current_theme)
@@ -925,18 +946,18 @@ class MainWindow(QMainWindow):
         d_layout = QVBoxLayout(d_card)
         d_layout.setSpacing(10)
 
-        d_title = QLabel("🔌 Hardware Sync Daemon (Root Service)")
-        d_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
+        d_title = QLabel("Hardware Sync Daemon (Root Service)")
+        d_title.setStyleSheet("font-size: 14px; font-weight: bold; color: palette(window-text);")
         d_layout.addWidget(d_title)
 
         self.daemon_detail_lbl = QLabel("Status: Checking...")
-        self.daemon_detail_lbl.setStyleSheet("color: #a0aec0; font-size: 12px;")
+        self.daemon_detail_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 12px;")
         d_layout.addWidget(self.daemon_detail_lbl)
 
         # Copyable Commands Header & Action
         cmd_hdr = QHBoxLayout()
         cmd_info = QLabel("Enable background service (run from project folder):")
-        cmd_info.setStyleSheet("color: #a0aec0; font-size: 12px; font-weight: 500;")
+        cmd_info.setStyleSheet("color: palette(placeholder-text); font-size: 12px; font-weight: 500;")
         cmd_hdr.addWidget(cmd_info)
         cmd_hdr.addStretch()
 
@@ -946,7 +967,8 @@ class MainWindow(QMainWindow):
             "sudo systemctl enable --now hp-control-daemon"
         )
 
-        btn_copy = QPushButton("📋 Copy Commands")
+        btn_copy = QPushButton("Copy Commands")
+        btn_copy.setIcon(QIcon.fromTheme("edit-copy"))
         btn_copy.setProperty("class", "SecondaryButton")
         btn_copy.setFixedHeight(28)
         btn_copy.clicked.connect(lambda: self._copy_to_clipboard(daemon_cmds_text, btn_copy))
@@ -978,9 +1000,10 @@ class MainWindow(QMainWindow):
             self.settings.setValue("theme", theme_name)
             self._apply_theme(theme_name)
 
-    def _apply_theme(self, theme_name: str):
-        self.current_theme = theme_name
-        stylesheet = THEMES.get(theme_name, CYBER_DARK_THEME)
+    def _apply_theme(self, theme_name: str = None):
+        if theme_name:
+            self.current_theme = theme_name
+        stylesheet = THEMES.get(self.current_theme, NATIVE_PALETTE_THEME)
 
         app = QApplication.instance()
         if app:
@@ -988,8 +1011,8 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(stylesheet)
 
         # Repolish widgets with dynamic state/theme classes
-        if hasattr(self, "profile_ctrl"):
-            for btn in self.profile_ctrl.buttons.values():
+        if hasattr(self, "profile_segmented"):
+            for btn in self.profile_segmented.buttons.values():
                 btn.style().unpolish(btn)
                 btn.style().polish(btn)
         if hasattr(self, "nav_buttons") and hasattr(self, "tab_stack"):
@@ -1003,9 +1026,12 @@ class MainWindow(QMainWindow):
             self.cooling_fan_lbl.style().polish(self.cooling_fan_lbl)
         if hasattr(self, "card_power"):
             for card in [getattr(self, c, None) for c in ["card_power", "card_temp", "card_fan", "card_gpu", "card_pcore", "card_ecore"]]:
-                if card and hasattr(card, "unit_lbl"):
-                    card.unit_lbl.style().unpolish(card.unit_lbl)
-                    card.unit_lbl.style().polish(card.unit_lbl)
+                if card:
+                    if hasattr(card, "unit_lbl"):
+                        card.unit_lbl.style().unpolish(card.unit_lbl)
+                        card.unit_lbl.style().polish(card.unit_lbl)
+                    if hasattr(card, "sparkline"):
+                        card.sparkline.update()
         self.update()
 
     def _copy_to_clipboard(self, text: str, btn: QPushButton = None):
@@ -1014,7 +1040,7 @@ class MainWindow(QMainWindow):
             clipboard.setText(text)
         if btn:
             orig = btn.text()
-            btn.setText("✓ Copied!")
+            btn.setText("Copied!")
             QTimer.singleShot(2000, lambda: btn.setText(orig))
 
     # ==============================================
@@ -1037,22 +1063,21 @@ class MainWindow(QMainWindow):
     def _toggle_sidebar(self):
         self.sidebar_expanded = not self.sidebar_expanded
         nav_texts = ["Dashboard", "Performance", "Graphics", "Display", "Cooling", "System Info", "Settings"]
-        nav_icons = ["📊", "⚡", "🎮", "🖥️", "❄️", "ℹ️", "⚙️"]
 
         if self.sidebar_expanded:
             self.sidebar_frame.setFixedWidth(200)
-            self.btn_collapse.setText("☰  Menu")
+            self.btn_collapse.setText("Menu")
             self.brand_lbl.setVisible(True)
             self.side_footer_lbl.setVisible(True)
             for idx, btn in enumerate(self.nav_buttons):
-                btn.setText(f"{nav_icons[idx]}  {nav_texts[idx]}")
+                btn.setText(f"  {nav_texts[idx]}")
         else:
-            self.sidebar_frame.setFixedWidth(64)
-            self.btn_collapse.setText("☰")
+            self.sidebar_frame.setFixedWidth(54)
+            self.btn_collapse.setText("")
             self.brand_lbl.setVisible(False)
             self.side_footer_lbl.setVisible(False)
             for idx, btn in enumerate(self.nav_buttons):
-                btn.setText(nav_icons[idx])
+                btn.setText("")
 
     # ==============================================
     # SLIDER & PROFILE LOGIC
@@ -1099,43 +1124,38 @@ class MainWindow(QMainWindow):
             return
         # Switch profile highlight to Custom
         self.profile_segmented.set_selected("custom")
+        self.profile_mgr.current_profile_key = "custom"
         self._recalculate_unsaved_changes()
 
     def _on_profile_selected(self, key: str):
         if key == "custom":
             return
-        self.profile_mgr.set_active_profile(key)
         self._load_profile_into_ui(key)
 
     def _load_profile_into_ui(self, key: str):
+        prof = self.profile_mgr.get_profile(key)
         self._is_loading_profile = True
-        try:
-            p = self.profile_mgr.get_profile(key)
-            self.profile_segmented.set_selected(key)
 
-            self.slider_pl1.set_value(int(p.get("pl1_w", 24)))
-            self.slider_pl2.set_value(int(p.get("pl2_w", 25)))
-            self.chk_sync_mmio.setChecked(bool(p.get("sync_mmio", True)))
+        self.slider_pl1.set_value(int(prof.get("pl1_w", 24)))
+        self.slider_pl2.set_value(int(prof.get("pl2_w", 28)))
+        self.chk_sync_mmio.setChecked(prof.get("sync_mmio", True))
+        self.chk_bdprochot.setChecked(prof.get("disable_bdprochot", True))
+        self.slider_gpu_min.set_value(int(prof.get("gpu_min_mhz", 800)))
+        self.slider_gpu_max.set_value(int(prof.get("gpu_max_mhz", 1250)))
 
-            self.chk_bdprochot.blockSignals(True)
-            self.chk_bdprochot.setChecked(bool(p.get("disable_bdprochot", True)))
-            self.chk_bdprochot.blockSignals(False)
+        idx_gpu_p = self.combo_gpu_power.findText(prof.get("gpu_power_mode", "base"))
+        if idx_gpu_p >= 0:
+            self.combo_gpu_power.setCurrentIndex(idx_gpu_p)
 
-            self.slider_gpu_min.set_value(int(p.get("gpu_min_mhz", 100)))
-            self.slider_gpu_max.set_value(int(p.get("gpu_max_mhz", 1250)))
+        self.chk_turbo.setChecked(prof.get("turbo_boost", True))
 
-            self.chk_turbo.setChecked(bool(p.get("turbo_boost", True)))
+        idx_epp = self.combo_epp.findText(prof.get("cpu_epp", "balance_performance"))
+        if idx_epp >= 0:
+            self.combo_epp.setCurrentIndex(idx_epp)
 
-            idx_epp = self.combo_epp.findText(p.get("cpu_epp", "balance_performance"))
-            if idx_epp >= 0:
-                self.combo_epp.setCurrentIndex(idx_epp)
-
-            idx_gpu_p = self.combo_gpu_power.findText(p.get("gpu_power_mode", "base"))
-            if idx_gpu_p >= 0:
-                self.combo_gpu_power.setCurrentIndex(idx_gpu_p)
-        finally:
-            self._is_loading_profile = False
-
+        self.profile_segmented.set_selected(key)
+        self.profile_mgr.current_profile_key = key
+        self._is_loading_profile = False
         self._recalculate_unsaved_changes()
 
     def _collect_ui_settings(self) -> dict:
@@ -1162,10 +1182,10 @@ class MainWindow(QMainWindow):
 
         if diffs > 0:
             self.unsaved_lbl.setText(f"{diffs} unsaved change{'s' if diffs > 1 else ''}")
-            self.unsaved_lbl.setStyleSheet("color: #f6ad55; font-size: 11px; font-weight: bold;")
+            self.unsaved_lbl.setStyleSheet(f"color: {STATUS_WARN}; font-size: 11px; font-weight: bold;")
         else:
             self.unsaved_lbl.setText("0 unsaved changes")
-            self.unsaved_lbl.setStyleSheet("color: #718096; font-size: 11px; font-style: italic;")
+            self.unsaved_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 11px; font-style: italic;")
 
         # Enable Apply only when daemon is online AND changes exist
         self.btn_apply.setEnabled(self.daemon_online and diffs > 0)
@@ -1194,7 +1214,7 @@ class MainWindow(QMainWindow):
                 self._send_to_daemon({"cmd": "apply", "settings": previous_settings})
                 self._applied_settings = dict(previous_settings)
                 self._load_profile_into_ui(self.profile_mgr.current_profile_key)
-                self.log_text.append("[✓] Restored previous safe settings.")
+                self.log_text.append("[OK] Restored previous safe settings.")
         else:
             self.log_text.append(f"[!] Daemon error: {resp.get('message', 'Failed to apply.')}")
 
@@ -1210,10 +1230,10 @@ class MainWindow(QMainWindow):
             self.daemon_online = False
 
         if self.daemon_online:
-            self.daemon_dot.setStyleSheet("color: #00e676; font-size: 14px;")
+            self.daemon_dot.setStyleSheet(f"color: {STATUS_OK}; font-size: 14px;")
             self.daemon_lbl.setText("Daemon Connected")
             self.daemon_detail_lbl.setText("Status: Online (Active Unix Socket)")
-            self.daemon_detail_lbl.setStyleSheet("color: #00e676; font-weight: bold;")
+            self.daemon_detail_lbl.setStyleSheet(f"color: {STATUS_OK}; font-weight: bold;")
             if not self._limits_loaded:
                 lim_resp = self._send_to_daemon({"cmd": "get_limits"})
                 if lim_resp.get("status") == "ok":
@@ -1224,10 +1244,10 @@ class MainWindow(QMainWindow):
                     self.slider_gpu_max.set_range(int(lim.get("gpu_min_mhz", 100)), int(lim.get("gpu_max_mhz", 1250)))
                     self._limits_loaded = True
         else:
-            self.daemon_dot.setStyleSheet("color: #ff3366; font-size: 14px;")
+            self.daemon_dot.setStyleSheet(f"color: {STATUS_CRITICAL}; font-size: 14px;")
             self.daemon_lbl.setText("Daemon Offline")
             self.daemon_detail_lbl.setText("Status: Offline (Start service to enable applying limits)")
-            self.daemon_detail_lbl.setStyleSheet("color: #ff3366;")
+            self.daemon_detail_lbl.setStyleSheet(f"color: {STATUS_CRITICAL};")
 
         self._recalculate_unsaved_changes()
 
@@ -1261,13 +1281,24 @@ class MainWindow(QMainWindow):
         # Throttle reason on power card
         gpu_th = data["gpu"]["throttle_reasons"].upper()
         th_reason = "NONE" if gpu_th in ("", "NONE") else gpu_th
-        self.card_power.update_value(
-            f"{watts:.1f}", f"Target PL1: {target}.0 W", badge_text=f"THROTTLE: {th_reason}", numeric_val=watts
-        )
+        if th_reason != "NONE":
+            self.card_power.update_value(
+                f"{watts:.1f}", f"Target PL1: {target}.0 W", badge_text=f"THROTTLE: {th_reason}", badge_color=STATUS_WARN, numeric_val=watts
+            )
+        else:
+            self.card_power.update_value(
+                f"{watts:.1f}", f"Target PL1: {target}.0 W", badge_text="THROTTLE: NONE", numeric_val=watts
+            )
 
-        # Temp
+        # Temp with semantic fixed status colors
         temp = data["temp_c"] if data["temp_c"] is not None else 0
-        temp_color = "#00e676" if temp < 70 else ("#ffaa00" if temp < 85 else "#ff3366")
+        if temp >= 90:
+            temp_color = STATUS_CRITICAL
+        elif temp >= 80:
+            temp_color = STATUS_WARN
+        else:
+            temp_color = STATUS_OK
+
         self.card_temp.update_value(
             f"{temp}" if temp else "--", "Core Temp Sensor", color=temp_color, numeric_val=float(temp)
         )
@@ -1275,7 +1306,7 @@ class MainWindow(QMainWindow):
         # Global High Temp Alert
         if temp >= 90:
             self.warning_banner.setVisible(True)
-            self.warning_lbl.setText(f"⚠️ HIGH TEMPERATURE ALERT: Package temperature is {temp}°C! Fan cooling active.")
+            self.warning_lbl.setText(f"HIGH TEMPERATURE ALERT: Package temperature is {temp}°C! Fan cooling active.")
         else:
             self.warning_banner.setVisible(False)
 
@@ -1288,7 +1319,7 @@ class MainWindow(QMainWindow):
         # Iris Xe GPU
         gpu = data["gpu"]
         reasons = gpu["throttle_reasons"]
-        gpu_color = "#ff3366" if gpu["is_throttling"] else "#ffffff"
+        gpu_color = STATUS_CRITICAL if gpu["is_throttling"] else None
         self.card_gpu.update_value(
             f"{gpu['act_mhz']}" if gpu['act_mhz'] else "--",
             f"Reasons: {reasons.upper()}",
@@ -1309,27 +1340,27 @@ class MainWindow(QMainWindow):
 
         # Power source badge
         if data["ac_connected"]:
-            self.power_src_badge.setText("🔌 AC POWER")
+            self.power_src_badge.setText("AC POWER")
             self.power_src_badge.setStyleSheet(
-                "background-color: #1a2333; color: #00e5ff; font-weight: bold; "
-                "padding: 6px 12px; border-radius: 6px; border: 1px solid #23354d; font-size: 11px;"
+                f"background-color: palette(base); color: {STATUS_OK}; font-weight: bold; "
+                "padding: 6px 12px; border-radius: 6px; border: 1px solid palette(mid); font-size: 11px;"
             )
         else:
-            self.power_src_badge.setText("🔋 ON BATTERY")
+            self.power_src_badge.setText("ON BATTERY")
             self.power_src_badge.setStyleSheet(
-                "background-color: #2b2214; color: #ffaa00; font-weight: bold; "
-                "padding: 6px 12px; border-radius: 6px; border: 1px solid #4a381a; font-size: 11px;"
+                f"background-color: palette(base); color: {STATUS_WARN}; font-weight: bold; "
+                "padding: 6px 12px; border-radius: 6px; border: 1px solid palette(mid); font-size: 11px;"
             )
 
         # Mini readout on bottom bar
-        self.mini_telemetry_lbl.setText(f"•  {temp}°C  |  {watts:.1f}W  |  {fan_rpm} RPM")
+        self.mini_telemetry_lbl.setText(f"{temp}°C  |  {watts:.1f}W  |  {fan_rpm} RPM")
         if temp >= 90:
-            self.mini_telemetry_lbl.setStyleSheet("color: #ff3366; font-size: 11px; font-weight: bold;")
+            self.mini_telemetry_lbl.setStyleSheet(f"color: {STATUS_CRITICAL}; font-size: 11px; font-weight: bold;")
         else:
-            self.mini_telemetry_lbl.setStyleSheet("color: #718096; font-size: 11px; font-weight: 500;")
+            self.mini_telemetry_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 11px; font-weight: 500;")
 
         # Tray Tooltip
-        self.tray.setToolTip(f"HP Control Center: {watts:.1f}W • {temp}°C • Fan: {fan_rpm} RPM")
+        self.tray.setToolTip(f"HP Control Center: {watts:.1f}W | {temp}°C | Fan: {fan_rpm} RPM")
 
     def _setup_tray(self):
         self.tray = QSystemTrayIcon(self)
@@ -1348,20 +1379,20 @@ class MainWindow(QMainWindow):
         self.tray.setIcon(icon)
 
         tray_menu = QMenu()
-        act_gaming = tray_menu.addAction("🚀 Ultra Gaming (25W)")
+        act_gaming = tray_menu.addAction(QIcon.fromTheme("speedometer"), "Ultra Gaming (25W)")
         act_gaming.triggered.connect(lambda: self._on_profile_selected("ultra_gaming"))
 
-        act_balanced = tray_menu.addAction("⚡ Daily Balanced (24W)")
+        act_balanced = tray_menu.addAction(QIcon.fromTheme("preferences-system-performance"), "Daily Balanced (24W)")
         act_balanced.triggered.connect(lambda: self._on_profile_selected("balanced"))
 
-        act_eco = tray_menu.addAction("🍃 Silent & Eco (15W)")
+        act_eco = tray_menu.addAction(QIcon.fromTheme("battery-profile-performance"), "Silent & Eco (15W)")
         act_eco.triggered.connect(lambda: self._on_profile_selected("eco_quiet"))
 
         tray_menu.addSeparator()
-        act_show = tray_menu.addAction("Open Control Center")
+        act_show = tray_menu.addAction(QIcon.fromTheme("utilities-system-monitor"), "Open Control Center")
         act_show.triggered.connect(self.showNormal)
 
-        act_quit = tray_menu.addAction("Quit")
+        act_quit = tray_menu.addAction(QIcon.fromTheme("application-exit"), "Quit")
         act_quit.triggered.connect(QApplication.instance().quit)
 
         self.tray.setContextMenu(tray_menu)

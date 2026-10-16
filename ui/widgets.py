@@ -1,7 +1,7 @@
 """
 Custom UI Widgets for HP Control Center
 Includes:
-- StatCard with live 60-second rolling SparklineWidget
+- StatCard with live 60-second rolling SparklineWidget using system accent & threshold status
 - SliderSetting with fixed-width editable spinbox & per-slider reset
 - CollapsibleSection container
 - SegmentedControl profile bar
@@ -22,18 +22,28 @@ from PySide6.QtWidgets import (
     QDialog,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen, QLinearGradient
+from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen, QLinearGradient, QIcon
+
+from ui.styles import STATUS_WARN, STATUS_CRITICAL
 
 
 class SparklineWidget(QWidget):
-    """60-second rolling sparkline graph sampled ~1/sec."""
+    """60-second rolling sparkline graph sampled ~1/sec.
+    Uses active Qt palette accent color by default, switching to STATUS_WARN/STATUS_CRITICAL above thresholds.
+    """
 
-    def __init__(self, color_hex: str = "#00e5ff", maxlen: int = 60, parent=None):
+    def __init__(self, warn_threshold: float = None, crit_threshold: float = None, maxlen: int = 60, parent=None):
         super().__init__(parent)
-        self.color_hex = color_hex
+        self.warn_threshold = warn_threshold
+        self.crit_threshold = crit_threshold
         self.data = deque(maxlen=maxlen)
         self.setFixedHeight(34)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def changeEvent(self, event):
+        if event.type() in (event.Type.PaletteChange, event.Type.ApplicationPaletteChange):
+            self.update()
+        super().changeEvent(event)
 
     def add_point(self, val: float):
         if val is not None:
@@ -83,20 +93,32 @@ class SparklineWidget(QWidget):
         fill_path.lineTo(points[0][0], h)
         fill_path.closeSubpath()
 
-        # Fill subtle gradient
-        c = QColor(self.color_hex)
+        # Dynamic color: accent normally, amber/red above thresholds
+        last_val = self.data[-1]
+        if self.crit_threshold is not None and last_val >= self.crit_threshold:
+            line_color = QColor(STATUS_CRITICAL)
+            is_accent = False
+        elif self.warn_threshold is not None and last_val >= self.warn_threshold:
+            line_color = QColor(STATUS_WARN)
+            is_accent = False
+        else:
+            line_color = self.palette().highlight().color()
+            is_accent = True
+
+        # Fill subtle gradient matching theme
         grad = QLinearGradient(0, 0, 0, h)
-        grad.setColorAt(0.0, QColor(c.red(), c.green(), c.blue(), 55))
-        grad.setColorAt(1.0, QColor(c.red(), c.green(), c.blue(), 0))
+        grad.setColorAt(0.0, QColor(line_color.red(), line_color.green(), line_color.blue(), 55))
+        grad.setColorAt(1.0, QColor(line_color.red(), line_color.green(), line_color.blue(), 0))
         painter.fillPath(fill_path, grad)
 
         # Draw stroke
-        pen = QPen(c, 1.8)
+        pen = QPen(line_color, 1.8)
         painter.strokePath(line_path, pen)
 
-        # Draw glowing dot on newest sample
+        # Draw glowing dot on newest sample with high-contrast inner fill
         last_x, last_y = points[-1]
-        painter.setBrush(QColor("#ffffff"))
+        dot_fill = self.palette().highlightedText().color() if is_accent else QColor("#ffffff")
+        painter.setBrush(dot_fill)
         painter.setPen(pen)
         painter.drawEllipse(int(last_x - 2), int(last_y - 2), 4, 4)
 
@@ -104,7 +126,7 @@ class SparklineWidget(QWidget):
 class StatCard(QFrame):
     """Telemetry Card displaying a live metric with status badges and a 60s sparkline."""
 
-    def __init__(self, title: str, initial_value: str, unit: str = "", subtitle: str = "", sparkline_color: str = "#00e5ff"):
+    def __init__(self, title: str, initial_value: str, unit: str = "", subtitle: str = "", warn_threshold: float = None, crit_threshold: float = None):
         super().__init__()
         self.setProperty("class", "CardFrame")
 
@@ -115,13 +137,13 @@ class StatCard(QFrame):
         # Header: Title + Badge
         top_row = QHBoxLayout()
         self.title_lbl = QLabel(title.upper())
-        self.title_lbl.setStyleSheet("color: #728096; font-size: 11px; font-weight: bold; letter-spacing: 1px;")
+        self.title_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 11px; font-weight: bold; letter-spacing: 1px;")
         top_row.addWidget(self.title_lbl)
 
         self.badge_lbl = QLabel("")
         self.badge_lbl.setStyleSheet(
             "font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; "
-            "background-color: #1a2230; color: #a0aec0;"
+            "background-color: palette(alternate-base); color: palette(placeholder-text);"
         )
         self.badge_lbl.setVisible(False)
         top_row.addWidget(self.badge_lbl, alignment=Qt.AlignRight)
@@ -131,7 +153,7 @@ class StatCard(QFrame):
         val_row = QHBoxLayout()
         val_row.setSpacing(4)
         self.val_lbl = QLabel(initial_value)
-        self.val_lbl.setStyleSheet("font-size: 26px; font-weight: 800; color: #ffffff;")
+        self.val_lbl.setStyleSheet("font-size: 26px; font-weight: 800; color: palette(window-text);")
         val_row.addWidget(self.val_lbl)
 
         if unit:
@@ -144,11 +166,11 @@ class StatCard(QFrame):
 
         # Subtitle / Status tag
         self.sub_lbl = QLabel(subtitle)
-        self.sub_lbl.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        self.sub_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
         layout.addWidget(self.sub_lbl)
 
         # 60-Second Sparkline Graph
-        self.sparkline = SparklineWidget(color_hex=sparkline_color, parent=self)
+        self.sparkline = SparklineWidget(warn_threshold=warn_threshold, crit_threshold=crit_threshold, parent=self)
         layout.addWidget(self.sparkline)
 
     def update_value(self, value_text: str, subtitle_text: str = None, color: str = None, badge_text: str = None, badge_color: str = None, numeric_val: float = None):
@@ -157,14 +179,22 @@ class StatCard(QFrame):
             self.sub_lbl.setText(subtitle_text)
         if color:
             self.val_lbl.setStyleSheet(f"font-size: 26px; font-weight: 800; color: {color};")
+        else:
+            self.val_lbl.setStyleSheet("font-size: 26px; font-weight: 800; color: palette(window-text);")
+
         if badge_text:
             self.badge_lbl.setText(badge_text)
             self.badge_lbl.setVisible(True)
-            bg = badge_color or "#1a2230"
-            self.badge_lbl.setStyleSheet(
-                f"font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; "
-                f"background-color: {bg}; color: #ffffff;"
-            )
+            if badge_color:
+                self.badge_lbl.setStyleSheet(
+                    f"font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; "
+                    f"background-color: {badge_color}; color: #ffffff;"
+                )
+            else:
+                self.badge_lbl.setStyleSheet(
+                    "font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; "
+                    "background-color: palette(alternate-base); color: palette(text);"
+                )
         elif badge_text is not None:
             self.badge_lbl.setVisible(False)
 
@@ -173,7 +203,6 @@ class StatCard(QFrame):
             self.sparkline.add_point(numeric_val)
         else:
             try:
-                # Fallback parse float from value_text
                 cleaned = value_text.replace(",", "").strip()
                 self.sparkline.add_point(float(cleaned))
             except ValueError:
@@ -185,7 +214,7 @@ class SliderSetting(QFrame):
     Slider setting with:
     - Title
     - Small fixed-width editable spinbox next to label
-    - Per-slider reset-to-default button
+    - Per-slider reset-to-default button with Breeze refresh icon
     - Full-width horizontal slider
     - Min and Max numeric labels at the ends
     """
@@ -209,7 +238,7 @@ class SliderSetting(QFrame):
         header.setSpacing(8)
 
         self.title_lbl = QLabel(label)
-        self.title_lbl.setStyleSheet("font-weight: 600; color: #d0d7e2; font-size: 13px;")
+        self.title_lbl.setStyleSheet("font-weight: 600; color: palette(window-text); font-size: 13px;")
         header.addWidget(self.title_lbl)
         header.addStretch()
 
@@ -224,9 +253,9 @@ class SliderSetting(QFrame):
         self.spin.valueChanged.connect(self._on_spin_changed)
         header.addWidget(self.spin)
 
-        # Per-slider reset button
+        # Per-slider reset button with native Breeze icon
         self.btn_reset = QToolButton()
-        self.btn_reset.setText("↺")
+        self.btn_reset.setIcon(QIcon.fromTheme("view-refresh"))
         self.btn_reset.setToolTip(f"Reset to default ({default_val} {self.unit})")
         self.btn_reset.setProperty("class", "SettingReset")
         self.btn_reset.clicked.connect(self.reset_to_default)
@@ -244,11 +273,11 @@ class SliderSetting(QFrame):
         # Min / Max labels at the ends
         range_row = QHBoxLayout()
         self.min_lbl = QLabel(f"{min_val} {unit}")
-        self.min_lbl.setStyleSheet("color: #4a5568; font-size: 10px; font-weight: 500;")
+        self.min_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 10px; font-weight: 500;")
         range_row.addWidget(self.min_lbl)
         range_row.addStretch()
         self.max_lbl = QLabel(f"{max_val} {unit}")
-        self.max_lbl.setStyleSheet("color: #4a5568; font-size: 10px; font-weight: 500;")
+        self.max_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 10px; font-weight: 500;")
         range_row.addWidget(self.max_lbl)
         layout.addLayout(range_row)
 
@@ -380,15 +409,15 @@ class RevertCountdownDialog(QDialog):
         layout.setContentsMargins(22, 22, 22, 20)
         layout.setSpacing(16)
 
-        title = QLabel("⚡ Hardware Limits Applied")
-        title.setStyleSheet("font-size: 15px; font-weight: bold; color: #ffffff;")
+        title = QLabel("Hardware Limits Applied")
+        title.setStyleSheet("font-size: 15px; font-weight: bold; color: palette(window-text);")
         layout.addWidget(title)
 
         self.msg_lbl = QLabel(
             f"Keep these settings? To protect hardware stability, settings will "
             f"automatically revert in {self.remaining} seconds if not confirmed."
         )
-        self.msg_lbl.setStyleSheet("font-size: 12px; color: #cfd7e3; line-height: 1.4;")
+        self.msg_lbl.setStyleSheet("font-size: 12px; color: palette(window-text); line-height: 1.4;")
         self.msg_lbl.setWordWrap(True)
         layout.addWidget(self.msg_lbl)
 
