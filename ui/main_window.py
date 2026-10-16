@@ -335,30 +335,30 @@ class MainWindow(QMainWindow):
         hud_grid = QGridLayout()
         hud_grid.setSpacing(12)
 
-        # Tile 1: Package Power with Throttle Reason (Uses system accent)
-        self.card_power = StatCard("Package Power", "0.0", "W", "Target: 25.0 W")
+        # Tile 1: Package Power with Throttle Reason
+        self.card_power = StatCard("Package Power", "0.0", "W", "Target: 25.0 W", min_floor=0.0, max_floor=30.0, accent_color="#38bdf8")
         hud_grid.addWidget(self.card_power, 0, 0)
 
         # Tile 2: Package Temp (warn at 80°C, crit at 90°C)
-        self.card_temp = StatCard("Package Temp", "--", "°C", "Thermal: Normal", warn_threshold=80.0, crit_threshold=90.0)
+        self.card_temp = StatCard("Package Temp", "--", "°C", "Core Temp Sensor", warn_threshold=80.0, crit_threshold=90.0, min_floor=30.0, max_floor=100.0, accent_color="#10b981")
         hud_grid.addWidget(self.card_temp, 0, 1)
 
-        # Tile 3: Cooling Fan (Uses system accent)
-        self.card_fan = StatCard("Cooling Fan", "--", "RPM", "Automatic EC Control")
+        # Tile 3: Cooling Fan
+        self.card_fan = StatCard("Cooling Fan", "--", "RPM", "Automatic EC Control", min_floor=0.0, max_floor=4000.0, accent_color="#06b6d4")
         hud_grid.addWidget(self.card_fan, 0, 2)
 
-        # Tile 4: Iris Xe Clock (Uses system accent)
-        self.card_gpu = StatCard("Iris Xe Clock", "--", "MHz", "State: Active")
+        # Tile 4: Iris Xe Clock
+        self.card_gpu = StatCard("Iris Xe Clock", "--", "MHz", "State: Active", min_floor=0.0, max_floor=1250.0, accent_color="#a855f7")
         hud_grid.addWidget(self.card_gpu, 1, 0)
 
-        # Tile 5: P-Core avg clock (Uses system accent)
+        # Tile 5: P-Core avg clock
         p_count = len(self.telemetry.p_core_threads)
-        self.card_pcore = StatCard("P-Cores (Avg)", "--", "GHz", f"{p_count} Threads (cpu0-{p_count-1})")
+        self.card_pcore = StatCard("P-Cores (Avg)", "--", "GHz", f"{p_count} Threads (cpu0-{p_count-1})", min_floor=0.0, max_floor=4.7, accent_color="#3b82f6")
         hud_grid.addWidget(self.card_pcore, 1, 1)
 
-        # Tile 6: E-Core avg clock (Uses system accent)
+        # Tile 6: E-Core avg clock
         e_count = len(self.telemetry.e_core_threads)
-        self.card_ecore = StatCard("E-Cores (Avg)", "--", "GHz", f"{e_count} Threads")
+        self.card_ecore = StatCard("E-Cores (Avg)", "--", "GHz", f"{e_count} Threads", min_floor=0.0, max_floor=3.5, accent_color="#0ea5e9")
         hud_grid.addWidget(self.card_ecore, 1, 2)
 
         layout.addLayout(hud_grid)
@@ -1259,6 +1259,8 @@ class MainWindow(QMainWindow):
                         card.unit_lbl.style().polish(card.unit_lbl)
                     if hasattr(card, "sparkline"):
                         card.sparkline.update()
+                    if hasattr(card, "ring"):
+                        card.ring.update()
         self.update()
 
     def _recolor_symbolic_icons(self):

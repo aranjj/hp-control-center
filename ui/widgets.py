@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QCheckBox,
     QDoubleSpinBox,
+    QSizePolicy,
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QObject, QByteArray, QSize, QRectF
 from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen, QLinearGradient, QIcon, QPixmap
@@ -151,18 +152,73 @@ class ToggleSwitch(QCheckBox):
         p.end()
 
 
+class MetricRingWidget(QWidget):
+    """Small circular ring + inner dot indicator icon matching Intel Arc Control cards."""
+
+    def __init__(self, color: QColor = None, parent=None):
+        super().__init__(parent)
+        self._color = color
+        self.setFixedSize(14, 14)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def set_color(self, color: QColor):
+        self._color = color
+        self.update()
+
+    def get_color(self) -> QColor:
+        if self._color:
+            return self._color
+        return self.palette().highlight().color()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        col = self.get_color()
+        r = QRectF(1.5, 1.5, 11.0, 11.0)
+        # Outer ring
+        p.setPen(QPen(col, 1.8))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(r)
+        # Center filled dot
+        p.setBrush(col)
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(QRectF(4.0, 4.0, 6.0, 6.0))
+        p.end()
+
+
 class SparklineWidget(QWidget):
-    """60-second rolling sparkline graph sampled ~1/sec.
-    Uses active Qt palette accent color by default, switching to STATUS_WARN/STATUS_CRITICAL above thresholds.
+    """60-second rolling stepped sparkline graph matching Intel Arc Control telemetry.
+    - Recessed dark rectangular container with rounded corners (border-radius: 6px) and subtle border.
+    - Sample-and-hold stepped line (step chart: horizontal to new time, vertical step to new value).
+    - Continuous baseline across the full 60s width from x=0.
+    - Soft vertical gradient glow fill under the stepped line.
+    - Glowing dot on the newest sample.
+    - Dynamic color: uses system accent / card color by default, switching to STATUS_WARN/STATUS_CRITICAL above thresholds.
     """
 
-    def __init__(self, warn_threshold: float = None, crit_threshold: float = None, maxlen: int = 60, parent=None):
+    def __init__(
+        self,
+        warn_threshold: float = None,
+        crit_threshold: float = None,
+        min_floor: float = 0.0,
+        max_floor: float = 10.0,
+        accent_color: QColor = None,
+        maxlen: int = 60,
+        parent=None,
+    ):
         super().__init__(parent)
         self.warn_threshold = warn_threshold
         self.crit_threshold = crit_threshold
+        self.min_floor = min_floor
+        self.max_floor = max_floor
+        self._custom_accent = accent_color
         self.data = deque(maxlen=maxlen)
-        self.setFixedHeight(34)
+        self.setFixedHeight(74)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def set_custom_accent(self, color: QColor):
+        self._custom_accent = color
+        self.update()
 
     def changeEvent(self, event):
         if event.type() in (event.Type.PaletteChange, event.Type.ApplicationPaletteChange):
@@ -175,139 +231,235 @@ class SparklineWidget(QWidget):
             self.update()
 
     def paintEvent(self, event):
-        if len(self.data) < 2:
-            return
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
 
         w = self.width()
         h = self.height()
-        n = len(self.data)
+        pal = self.palette()
 
-        min_val = min(self.data)
-        max_val = max(self.data)
+        # 1. Container box (recessed dark plot area with subtle border)
+        box_rect = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
+        bg_col = pal.base().color()
+        p.setBrush(bg_col)
+        border_col = pal.mid().color()
+        border_col.setAlpha(80)
+        p.setPen(QPen(border_col, 1.0))
+        p.drawRoundedRect(box_rect, 6.0, 6.0)
+
+        # 2. Plot dimensions
+        pad_x = 8.0
+        pad_y = 8.0
+        plot_w = w - (2.0 * pad_x)
+        plot_h = h - (2.0 * pad_y)
+        base_y = pad_y + plot_h
+
+        # Compute range with floor
+        if len(self.data) > 0:
+            min_val = min(self.min_floor, min(self.data))
+            max_val = max(self.max_floor, max(self.data))
+        else:
+            min_val = self.min_floor
+            max_val = self.max_floor
+
         rng = max_val - min_val
         if rng < 0.001:
-            rng = 1.0  # Avoid division by zero on flat values
+            rng = 1.0
 
-        # 4px vertical padding
-        pad = 4.0
-        draw_h = h - (2 * pad)
+        # Build full maxlen points list (pad left with baseline/min_val so graph is grounded from start)
+        k = len(self.data)
+        if k == 0:
+            vals = [min_val] * self.data.maxlen
+        elif k < self.data.maxlen:
+            pad_val = self.data[0] if (self.data[0] <= min_val) else min_val
+            vals = [pad_val] * (self.data.maxlen - k) + list(self.data)
+        else:
+            vals = list(self.data)
 
-        step = w / (self.data.maxlen - 1)
-        start_x = w - ((n - 1) * step)
-
+        step_x = plot_w / (self.data.maxlen - 1)
         points = []
-        for i, val in enumerate(self.data):
-            x = start_x + (i * step)
+        for i, val in enumerate(vals):
+            x = pad_x + (i * step_x)
             norm = (val - min_val) / rng
-            y = pad + draw_h * (1.0 - norm)
+            norm = max(0.0, min(1.0, norm))
+            y = base_y - (norm * plot_h)
             points.append((x, y))
 
-        # Path for the line
+        # 3. Build stepped line path (sample-and-hold square wave telemetry)
         line_path = QPainterPath()
         line_path.moveTo(points[0][0], points[0][1])
-        for x, y in points[1:]:
-            line_path.lineTo(x, y)
+        for i in range(1, len(points)):
+            prev_x, prev_y = points[i - 1]
+            cur_x, cur_y = points[i]
+            # Horizontal to cur_x at prev_y, then vertical step to cur_y
+            line_path.lineTo(cur_x, prev_y)
+            line_path.lineTo(cur_x, cur_y)
 
-        # Path for gradient fill below line
+        # 4. Fill path under stepped line
         fill_path = QPainterPath(line_path)
-        fill_path.lineTo(points[-1][0], h)
-        fill_path.lineTo(points[0][0], h)
+        fill_path.lineTo(points[-1][0], base_y)
+        fill_path.lineTo(points[0][0], base_y)
         fill_path.closeSubpath()
 
-        # Dynamic color: accent normally, amber/red above thresholds
-        last_val = self.data[-1]
+        # Dynamic color check
+        last_val = self.data[-1] if len(self.data) > 0 else min_val
         if self.crit_threshold is not None and last_val >= self.crit_threshold:
             line_color = QColor(STATUS_CRITICAL)
             is_accent = False
         elif self.warn_threshold is not None and last_val >= self.warn_threshold:
             line_color = QColor(STATUS_WARN)
             is_accent = False
+        elif self._custom_accent is not None:
+            line_color = self._custom_accent
+            is_accent = True
         else:
-            line_color = self.palette().highlight().color()
+            line_color = pal.highlight().color()
             is_accent = True
 
-        # Fill subtle gradient matching theme
-        grad = QLinearGradient(0, 0, 0, h)
-        grad.setColorAt(0.0, QColor(line_color.red(), line_color.green(), line_color.blue(), 55))
+        # Subtle gradient fill below stepped line
+        grad = QLinearGradient(0, pad_y, 0, base_y)
+        grad.setColorAt(0.0, QColor(line_color.red(), line_color.green(), line_color.blue(), 45))
         grad.setColorAt(1.0, QColor(line_color.red(), line_color.green(), line_color.blue(), 0))
-        painter.fillPath(fill_path, grad)
+        p.fillPath(fill_path, grad)
 
-        # Draw stroke
+        # 5. Draw crisp stepped stroke
         pen = QPen(line_color, 1.8)
-        painter.strokePath(line_path, pen)
+        pen.setCapStyle(Qt.SquareCap)
+        pen.setJoinStyle(Qt.MiterJoin)
+        p.strokePath(line_path, pen)
 
-        # Draw glowing dot on newest sample with high-contrast inner fill
+        # 6. Glowing indicator dot on latest point
         last_x, last_y = points[-1]
-        dot_fill = self.palette().highlightedText().color() if is_accent else QColor("#ffffff")
-        painter.setBrush(dot_fill)
-        painter.setPen(pen)
-        painter.drawEllipse(int(last_x - 2), int(last_y - 2), 4, 4)
+        dot_fill = pal.highlightedText().color() if is_accent else QColor("#ffffff")
+        p.setBrush(dot_fill)
+        p.setPen(QPen(line_color, 1.5))
+        p.drawEllipse(QRectF(last_x - 2.5, last_y - 2.5, 5.0, 5.0))
+
+        p.end()
 
 
 class StatCard(QFrame):
-    """Telemetry Card displaying a live metric with status badges and a 60s sparkline."""
+    """Telemetry Card displaying a live metric with status badges and an Intel Arc Control styled 60s stepped graph."""
 
-    def __init__(self, title: str, initial_value: str, unit: str = "", subtitle: str = "", warn_threshold: float = None, crit_threshold: float = None):
+    def __init__(
+        self,
+        title: str,
+        initial_value: str,
+        unit: str = "",
+        subtitle: str = "",
+        warn_threshold: float = None,
+        crit_threshold: float = None,
+        min_floor: float = 0.0,
+        max_floor: float = 10.0,
+        accent_color: str = None,
+    ):
         super().__init__()
         self.setProperty("class", "CardFrame")
+        self._accent_color = QColor(accent_color) if accent_color else None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(4)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(6)
 
-        # Header: Title + Badge
+        # Header Row: Indicator Ring + (Title & Subtitle stacked) + Badge
         top_row = QHBoxLayout()
-        self.title_lbl = QLabel(title.upper())
-        self.title_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 11px; font-weight: bold; letter-spacing: 1px;")
-        top_row.addWidget(self.title_lbl)
+        top_row.setSpacing(8)
+        top_row.setContentsMargins(0, 0, 0, 0)
+
+        self.ring = MetricRingWidget(color=self._accent_color)
+        top_row.addWidget(self.ring, alignment=Qt.AlignTop)
+
+        txt_col = QVBoxLayout()
+        txt_col.setSpacing(1)
+        txt_col.setContentsMargins(0, 0, 0, 0)
+
+        self.title_lbl = QLabel(title)
+        self.title_lbl.setStyleSheet("color: palette(window-text); font-size: 13px; font-weight: 700;")
+        txt_col.addWidget(self.title_lbl)
+
+        self.sub_lbl = QLabel(subtitle)
+        self.sub_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+        txt_col.addWidget(self.sub_lbl)
+        top_row.addLayout(txt_col)
+        top_row.addStretch()
 
         self.badge_lbl = QLabel("")
         self.badge_lbl.setStyleSheet(
             "font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; "
-            "background-color: palette(alternate-base); color: palette(placeholder-text);"
+            "background-color: palette(alternate-base); color: palette(window-text); border: 1px solid palette(mid);"
         )
+        self.badge_lbl.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.badge_lbl.setVisible(False)
-        top_row.addWidget(self.badge_lbl, alignment=Qt.AlignRight)
+        top_row.addWidget(self.badge_lbl, alignment=Qt.AlignVCenter | Qt.AlignRight)
         layout.addLayout(top_row)
 
         # Value Row
         val_row = QHBoxLayout()
-        val_row.setSpacing(4)
+        val_row.setSpacing(6)
+        val_row.setContentsMargins(0, 2, 0, 4)
+
         self.val_lbl = QLabel(initial_value)
-        self.val_lbl.setStyleSheet("font-size: 26px; font-weight: 800; color: palette(window-text);")
+        self.val_lbl.setStyleSheet("font-size: 28px; font-weight: 800; color: palette(window-text);")
         val_row.addWidget(self.val_lbl)
 
         if unit:
             self.unit_lbl = QLabel(unit)
-            self.unit_lbl.setProperty("class", "CardUnitAccent")
+            col_str = self._accent_color.name() if self._accent_color else "palette(highlight)"
+            self.unit_lbl.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {col_str}; margin-bottom: 4px;")
             self.unit_lbl.setAlignment(Qt.AlignBottom)
             val_row.addWidget(self.unit_lbl)
         val_row.addStretch()
         layout.addLayout(val_row)
 
-        # Subtitle / Status tag
-        self.sub_lbl = QLabel(subtitle)
-        self.sub_lbl.setProperty("class", "Footnote")
-        layout.addWidget(self.sub_lbl)
-
-        # 60-Second Sparkline Graph
-        self.sparkline = SparklineWidget(warn_threshold=warn_threshold, crit_threshold=crit_threshold, parent=self)
+        # 60-Second Stepped Graph
+        self.sparkline = SparklineWidget(
+            warn_threshold=warn_threshold,
+            crit_threshold=crit_threshold,
+            min_floor=min_floor,
+            max_floor=max_floor,
+            accent_color=self._accent_color,
+            parent=self,
+        )
         layout.addWidget(self.sparkline)
 
-    def update_value(self, value_text: str, subtitle_text: str = None, color: str = None, badge_text: str = None, badge_color: str = None, numeric_val: float = None):
+    def set_accent_color(self, color: str):
+        col = QColor(color)
+        self._accent_color = col
+        self.ring.set_color(col)
+        self.sparkline.set_custom_accent(col)
+        if hasattr(self, "unit_lbl"):
+            self.unit_lbl.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {col.name()}; margin-bottom: 4px;")
+
+    def update_value(
+        self,
+        value_text: str,
+        subtitle_text: str = None,
+        color: str = None,
+        badge_text: str = None,
+        badge_color: str = None,
+        numeric_val: float = None,
+    ):
         self.val_lbl.setText(value_text)
         if subtitle_text is not None:
             self.sub_lbl.setText(subtitle_text)
+
+        # If explicit status color is passed (e.g. for temperature or throttle)
         if color:
-            self.val_lbl.setStyleSheet(f"font-size: 26px; font-weight: 800; color: {color};")
+            self.val_lbl.setStyleSheet(f"font-size: 28px; font-weight: 800; color: {color};")
+            self.ring.set_color(QColor(color))
+            if hasattr(self, "unit_lbl"):
+                self.unit_lbl.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {color}; margin-bottom: 4px;")
         else:
-            self.val_lbl.setStyleSheet("font-size: 26px; font-weight: 800; color: palette(window-text);")
+            self.val_lbl.setStyleSheet("font-size: 28px; font-weight: 800; color: palette(window-text);")
+            col = self._accent_color or self.palette().highlight().color()
+            self.ring.set_color(col)
+            if hasattr(self, "unit_lbl"):
+                self.unit_lbl.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {col.name()}; margin-bottom: 4px;")
 
         if badge_text:
             self.badge_lbl.setText(badge_text)
+            self.badge_lbl.adjustSize()
+            self.badge_lbl.setMinimumWidth(self.badge_lbl.sizeHint().width() + 6)
             self.badge_lbl.setVisible(True)
             if badge_color:
                 self.badge_lbl.setStyleSheet(
@@ -317,7 +469,7 @@ class StatCard(QFrame):
             else:
                 self.badge_lbl.setStyleSheet(
                     "font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; "
-                    "background-color: palette(alternate-base); color: palette(text);"
+                    "background-color: palette(alternate-base); color: palette(window-text); border: 1px solid palette(mid);"
                 )
         elif badge_text is not None:
             self.badge_lbl.setVisible(False)
