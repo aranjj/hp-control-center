@@ -130,6 +130,19 @@ class MainWindow(QMainWindow):
         # Initial responsive cards placement
         self._update_responsive_layout(self.width())
 
+    def activate_window_to_front(self):
+        """Unhides, unminimizes, and brings the window to the foreground."""
+        if not self.isVisible():
+            self.show()
+        if self.isMinimized():
+            self.showNormal()
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive)
+        self.raise_()
+        self.activateWindow()
+        wh = self.windowHandle()
+        if wh:
+            wh.requestActivate()
+
     def closeEvent(self, event):
         """Remember window size/position on close."""
         self.settings.setValue("geometry", self.saveGeometry())
