@@ -38,6 +38,10 @@ HARDWARE_LIMITS = {
 class DaemonService:
     def __init__(self):
         self.hw = HardwareController()
+        # Bring all cores back online at startup and cache complete physical topology
+        self.hw.restore_all_cores()
+        get_cpu_topology_info(force_refresh=True)
+
         self.telemetry = TelemetryReader()
         self.running = True
         self.active_settings = dict(DEFAULT_PROFILES["balanced"])
@@ -108,10 +112,14 @@ class DaemonService:
             clamped["e_core_min_mhz"] = max(topo["e_min_mhz"], min(limit_max, raw_e_min))
 
         # 9. Core Management (Active P-core threads & Active E-cores)
+        total_p = len(topo["p_cpus"])
+        total_e = len(topo["e_cpus"])
         if "active_p_threads" in settings:
-            clamped["active_p_threads"] = int(settings["active_p_threads"])
+            raw_p = int(settings["active_p_threads"])
+            clamped["active_p_threads"] = max(2 if total_p > 1 else 1, min(total_p, raw_p))
         if "active_e_cores" in settings:
-            clamped["active_e_cores"] = int(settings["active_e_cores"])
+            raw_e = int(settings["active_e_cores"])
+            clamped["active_e_cores"] = max(0, min(total_e, raw_e))
 
         # 10. Thermal Target
         raw_target = int(settings.get("thermal_target_c", 95))
@@ -142,20 +150,20 @@ class DaemonService:
                 self.hw.set_cpu_epp(s["cpu_epp"])
                 self.hw.set_cpu_governor(s["cpu_governor"])
 
-                # 6. CPU Clock Frequencies (P-core & E-core)
+                # 6. Core Management (Parking / Unparking Cores) - unpark before setting clocks
+                if "active_p_threads" in s or "active_e_cores" in s:
+                    self.hw.set_online_cores(
+                        active_p_threads=s.get("active_p_threads"),
+                        active_e_cores=s.get("active_e_cores"),
+                    )
+
+                # 7. CPU Clock Frequencies (P-core & E-core) - applied to all online cores
                 self.hw.set_cpu_frequencies(
                     p_max_mhz=s.get("p_core_max_mhz"),
                     e_max_mhz=s.get("e_core_max_mhz"),
                     p_min_mhz=s.get("p_core_min_mhz"),
                     e_min_mhz=s.get("e_core_min_mhz"),
                 )
-
-                # 7. Core Management (Parking / Unparking Cores)
-                if "active_p_threads" in s or "active_e_cores" in s:
-                    self.hw.set_online_cores(
-                        active_p_threads=s.get("active_p_threads"),
-                        active_e_cores=s.get("active_e_cores"),
-                    )
 
                 # 8. Hardware TCC offset (if enabled & writable)
                 if s.get("use_hardware_tcc") and self.tcc_writable:

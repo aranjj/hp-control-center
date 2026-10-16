@@ -9,7 +9,9 @@ Handles:
 """
 
 import os
+import sys
 import glob
+import json
 import mmap
 import struct
 import subprocess
@@ -250,7 +252,8 @@ class HardwareController:
                 with open(path, "w") as f:
                     f.write("1\n" if online else "0\n")
                 return True
-            except OSError:
+            except OSError as e:
+                print(f"[!] _set_cpu_online failed for CPU {cpu} online={online}: {e}", file=sys.stderr)
                 return False
         return False
 
@@ -259,7 +262,8 @@ class HardwareController:
         - CPU 0 is never offlined;
         - At least one P-core thread always stays online;
         - P-core siblings are offlined together as pairs from highest CPU down;
-        - E-cores are offlined from highest CPU down.
+        - E-cores are offlined from highest CPU down;
+        - When re-enabling cores, onlining executes first to avoid unneeded drops.
         """
         details = get_core_topology_details()
         p_pairs = sorted(details["p_pairs"], key=lambda pair: max(pair), reverse=True)
@@ -267,8 +271,9 @@ class HardwareController:
 
         # 1. P-core threads offlining (pairs kept together)
         if active_p_threads is not None and p_pairs:
-            total_p_threads = len(details["p_cpus"])
-            desired_p = max(2 if len(p_pairs) > 1 else 1, min(total_p_threads, active_p_threads))
+            total_p_threads = sum(len(pair) for pair in p_pairs)
+            min_p = len(p_pairs[0]) if len(p_pairs) > 1 else 1
+            desired_p = max(min_p, min(total_p_threads, active_p_threads))
             threads_per_pair = len(p_pairs[0]) if p_pairs else 1
             pairs_to_keep = max(1, (desired_p + threads_per_pair - 1) // threads_per_pair)
 
@@ -276,14 +281,17 @@ class HardwareController:
             pairs_to_offline = p_pairs[: max(0, len(p_pairs) - pairs_to_keep)]
             pairs_to_online = p_pairs[max(0, len(p_pairs) - pairs_to_keep) :]
 
-            for pair in pairs_to_offline:
-                for cpu in pair:
-                    if cpu != 0:
-                        self._set_cpu_online(cpu, False)
-            for pair in pairs_to_online:
-                for cpu in pair:
+            # First online cores from lowest up
+            for pair in reversed(pairs_to_online):
+                for cpu in sorted(pair):
                     if cpu != 0:
                         self._set_cpu_online(cpu, True)
+
+            # Then offline cores from highest down
+            for pair in pairs_to_offline:
+                for cpu in sorted(pair, reverse=True):
+                    if cpu != 0:
+                        self._set_cpu_online(cpu, False)
 
         # 2. E-core offlining
         if active_e_cores is not None and e_cpus:
@@ -292,19 +300,26 @@ class HardwareController:
             e_to_offline = e_cpus[: max(0, total_e - desired_e)]
             e_to_online = e_cpus[max(0, total_e - desired_e) :]
 
-            for cpu in e_to_offline:
-                self._set_cpu_online(cpu, False)
-            for cpu in e_to_online:
+            # First online needed cores from lowest up
+            for cpu in sorted(e_to_online):
                 self._set_cpu_online(cpu, True)
+
+            # Then offline unneeded cores from highest down
+            for cpu in sorted(e_to_offline, reverse=True):
+                self._set_cpu_online(cpu, False)
 
     def restore_all_cores(self):
         """Brings all CPU cores back online on Reset Defaults or daemon shutdown."""
-        for path in glob.glob("/sys/devices/system/cpu/cpu[1-9]*/online"):
+        paths = sorted(
+            glob.glob("/sys/devices/system/cpu/cpu*/online"),
+            key=lambda p: int(os.path.basename(os.path.dirname(p))[3:])
+        )
+        for path in paths:
             try:
                 with open(path, "w") as f:
                     f.write("1\n")
-            except OSError:
-                pass
+            except OSError as e:
+                print(f"[!] restore_all_cores failed for {path}: {e}", file=sys.stderr)
 
     def check_tcc_offset_writable(self) -> bool:
         """Checks if MSR_TEMPERATURE_TARGET (0x1A2) is writable and unlocked."""
@@ -347,56 +362,34 @@ class HardwareController:
             return False
 
 
-def get_core_topology_details() -> dict:
-    """Discovers thread sibling pairs and online status for all CPUs."""
-    all_cpus = []
-    for cpu_dir in sorted(glob.glob("/sys/devices/system/cpu/cpu[0-9]*"), key=lambda p: int(os.path.basename(p)[3:])):
-        num = int(os.path.basename(cpu_dir)[3:])
-        all_cpus.append(num)
+TOPOLOGY_CACHE_FILE = "/tmp/hp_cpu_topology_cache.json"
+_STATIC_CPU_TOPOLOGY = None
 
-    topo = get_cpu_topology_info()
-    p_cpus = topo["p_cpus"]
-    e_cpus = topo["e_cpus"]
 
-    # Read thread siblings list for each CPU
-    p_pairs = []
-    seen = set()
-    for cpu in p_cpus:
-        if cpu in seen:
-            continue
-        sib_path = f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"
-        sibs = parse_sysfs_cpulist(sib_path) if os.path.exists(sib_path) else [cpu]
-        sibs = [c for c in sibs if c in p_cpus]
-        if not sibs:
-            sibs = [cpu]
-        for c in sibs:
-            seen.add(c)
-        p_pairs.append(sorted(sibs))
+def save_topology_cache(topo: dict):
+    try:
+        tmp_file = f"{TOPOLOGY_CACHE_FILE}.tmp.{os.getpid()}"
+        with open(tmp_file, "w") as f:
+            json.dump(topo, f, indent=2)
+        try:
+            os.chmod(tmp_file, 0o644)
+        except OSError:
+            pass
+        os.replace(tmp_file, TOPOLOGY_CACHE_FILE)
+    except Exception:
+        pass
 
-    # Read online states & writability
-    online_map = {}
-    writable_map = {}
-    for c in all_cpus:
-        p = f"/sys/devices/system/cpu/cpu{c}/online"
-        if os.path.exists(p):
-            try:
-                with open(p, "r") as f:
-                    online_map[c] = (f.read().strip() == "1")
-            except OSError:
-                online_map[c] = True
-            writable_map[c] = os.access(p, os.W_OK)
-        else:
-            online_map[c] = True
-            writable_map[c] = False
 
-    return {
-        "all_cpus": all_cpus,
-        "p_cpus": p_cpus,
-        "e_cpus": e_cpus,
-        "p_pairs": p_pairs,
-        "online_map": online_map,
-        "writable_map": writable_map,
-    }
+def load_topology_cache() -> dict | None:
+    if os.path.exists(TOPOLOGY_CACHE_FILE):
+        try:
+            with open(TOPOLOGY_CACHE_FILE, "r") as f:
+                data = json.load(f)
+                if data.get("p_cpus") and ("e_cpus" in data) and data.get("p_pairs"):
+                    return data
+        except Exception:
+            pass
+    return None
 
 
 def parse_sysfs_cpulist(path: str) -> list[int]:
@@ -419,50 +412,101 @@ def parse_sysfs_cpulist(path: str) -> list[int]:
         return []
 
 
-def get_cpu_topology_info() -> dict:
-    """Discovers core types (P-core, E-core) and frequency bounds at runtime without hardcoded CPU numbers."""
+def get_cpu_topology_info(force_refresh: bool = False) -> dict:
+    """Discovers core types (P-core, E-core) and frequency bounds at runtime without hardcoded CPU numbers.
+    Caches the static physical topology so dynamically offlining cores never corrupts core discovery.
+    """
+    global _STATIC_CPU_TOPOLOGY
+    if not force_refresh:
+        if _STATIC_CPU_TOPOLOGY is not None:
+            return _STATIC_CPU_TOPOLOGY
+        cached = load_topology_cache()
+        if cached:
+            _STATIC_CPU_TOPOLOGY = cached
+            return cached
+
+    # Parse PMU CPU masks (which in Linux kernel only list currently-online cores)
     p_cpus = parse_sysfs_cpulist("/sys/devices/cpu_core/cpus")
     e_cpus = parse_sysfs_cpulist("/sys/devices/cpu_atom/cpus")
 
-    # Fallback if kernel does not expose cpu_core / cpu_atom
-    if not p_cpus and not e_cpus:
-        all_cpus = [
+    possible_cpus = parse_sysfs_cpulist("/sys/devices/system/cpu/possible")
+    if not possible_cpus:
+        possible_cpus = [
             int(os.path.basename(p)[3:])
             for p in glob.glob("/sys/devices/system/cpu/cpu[0-9]*")
             if os.path.basename(p)[3:].isdigit()
         ]
-        all_cpus.sort()
-        p_cpus = all_cpus[:4] if len(all_cpus) >= 4 else all_cpus
-        e_cpus = all_cpus[4:] if len(all_cpus) > 4 else []
+        possible_cpus.sort()
+
+    # If some CPUs are currently offline, PMU sysfs only includes the online ones!
+    known_cpus = set(p_cpus + e_cpus)
+    missing_cpus = [c for c in possible_cpus if c not in known_cpus]
+    if missing_cpus:
+        # Check if we have write access to bring them online temporarily
+        can_write_online = any(os.access(f"/sys/devices/system/cpu/cpu{c}/online", os.W_OK) for c in missing_cpus)
+        if can_write_online:
+            for c in missing_cpus:
+                try:
+                    with open(f"/sys/devices/system/cpu/cpu{c}/online", "w") as f:
+                        f.write("1\n")
+                except OSError:
+                    pass
+            # Re-read PMUs with all cores online
+            p_cpus = parse_sysfs_cpulist("/sys/devices/cpu_core/cpus")
+            e_cpus = parse_sysfs_cpulist("/sys/devices/cpu_atom/cpus")
+        else:
+            # Non-root fallback:
+            if e_cpus:
+                min_e = min(e_cpus)
+                e_cpus = sorted(list(set(e_cpus + [c for c in possible_cpus if c >= min_e])))
+                p_cpus = sorted(list(set(p_cpus + [c for c in possible_cpus if c < min_e])))
+            elif p_cpus:
+                max_p = max(p_cpus)
+                p_cpus = sorted(list(set(p_cpus + [c for c in possible_cpus if c <= max_p])))
+                e_cpus = sorted([c for c in possible_cpus if c > max_p])
+            else:
+                p_cpus = possible_cpus[:4] if len(possible_cpus) >= 4 else possible_cpus
+                e_cpus = possible_cpus[4:] if len(possible_cpus) > 4 else []
 
     def get_freq_bounds(cpus: list[int], fallback_min: int, fallback_max: int) -> tuple[int, int]:
         if not cpus:
             return fallback_min, fallback_max
-        first_cpu = cpus[0]
-        min_path = f"/sys/devices/system/cpu/cpu{first_cpu}/cpufreq/cpuinfo_min_freq"
-        max_path = f"/sys/devices/system/cpu/cpu{first_cpu}/cpufreq/cpuinfo_max_freq"
-        min_khz = fallback_min
-        max_khz = fallback_max
-        if os.path.exists(min_path):
-            try:
-                with open(min_path, "r") as f:
-                    min_khz = int(f.read().strip())
-            except (OSError, ValueError):
-                pass
-        if os.path.exists(max_path):
-            try:
-                with open(max_path, "r") as f:
-                    max_khz = int(f.read().strip())
-            except (OSError, ValueError):
-                pass
-        return min_khz, max_khz
+        for cpu in cpus:
+            min_path = f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/cpuinfo_min_freq"
+            max_path = f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/cpuinfo_max_freq"
+            if os.path.exists(min_path) and os.path.exists(max_path):
+                try:
+                    with open(min_path, "r") as f:
+                        min_khz = int(f.read().strip())
+                    with open(max_path, "r") as f:
+                        max_khz = int(f.read().strip())
+                    return min_khz, max_khz
+                except (OSError, ValueError):
+                    pass
+        return fallback_min, fallback_max
 
     p_min_khz, p_max_khz = get_freq_bounds(p_cpus, 400000, 4700000)
     e_min_khz, e_max_khz = get_freq_bounds(e_cpus, 400000, 3500000)
 
-    return {
+    # Discover thread sibling pairs for physical P-cores
+    p_pairs = []
+    seen = set()
+    for cpu in p_cpus:
+        if cpu in seen:
+            continue
+        sib_path = f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"
+        sibs = parse_sysfs_cpulist(sib_path) if os.path.exists(sib_path) else [cpu]
+        sibs = [c for c in sibs if c in p_cpus]
+        if not sibs:
+            sibs = [cpu]
+        for c in sibs:
+            seen.add(c)
+        p_pairs.append(sorted(sibs))
+
+    topo = {
         "p_cpus": p_cpus,
         "e_cpus": e_cpus,
+        "p_pairs": p_pairs,
         "p_min_khz": p_min_khz,
         "p_max_khz": p_max_khz,
         "e_min_khz": e_min_khz,
@@ -473,4 +517,45 @@ def get_cpu_topology_info() -> dict:
         "e_max_mhz": e_max_khz // 1000,
         "p_supported": len(p_cpus) > 0,
         "e_supported": len(e_cpus) > 0,
+    }
+
+    _STATIC_CPU_TOPOLOGY = topo
+    save_topology_cache(topo)
+    return topo
+
+
+def get_core_topology_details() -> dict:
+    """Discovers thread sibling pairs and online status for all CPUs.
+    p_cpus, e_cpus, and p_pairs represent the complete physical hardware layout.
+    online_map and writable_map represent live dynamic status.
+    """
+    topo = get_cpu_topology_info()
+    p_cpus = list(topo["p_cpus"])
+    e_cpus = list(topo["e_cpus"])
+    p_pairs = [list(pair) for pair in topo.get("p_pairs", [])]
+    all_cpus = sorted(list(set(p_cpus + e_cpus)))
+
+    # Read live online states & writability
+    online_map = {}
+    writable_map = {}
+    for c in all_cpus:
+        p = f"/sys/devices/system/cpu/cpu{c}/online"
+        if os.path.exists(p):
+            try:
+                with open(p, "r") as f:
+                    online_map[c] = (f.read().strip() == "1")
+            except OSError:
+                online_map[c] = True
+            writable_map[c] = os.access(p, os.W_OK)
+        else:
+            online_map[c] = True
+            writable_map[c] = False
+
+    return {
+        "all_cpus": all_cpus,
+        "p_cpus": p_cpus,
+        "e_cpus": e_cpus,
+        "p_pairs": p_pairs,
+        "online_map": online_map,
+        "writable_map": writable_map,
     }
