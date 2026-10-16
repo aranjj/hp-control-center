@@ -204,3 +204,115 @@ class HardwareController:
             except OSError:
                 success = False
         return success
+
+    def set_cpu_frequencies(
+        self,
+        p_max_mhz: int = None,
+        e_max_mhz: int = None,
+        p_min_mhz: int = None,
+        e_min_mhz: int = None,
+    ) -> bool:
+        """Sets scaling_max_freq (and optional scaling_min_freq) for P-cores and E-cores."""
+        topo = get_cpu_topology_info()
+        success = True
+
+        def write_freq(cpus, filename, mhz):
+            if mhz is None:
+                return
+            khz_str = f"{int(mhz * 1000)}\n"
+            for cpu in cpus:
+                p = f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/{filename}"
+                if os.path.exists(p):
+                    try:
+                        with open(p, "w") as f:
+                            f.write(khz_str)
+                    except OSError:
+                        pass
+
+        if p_max_mhz is not None:
+            write_freq(topo["p_cpus"], "scaling_max_freq", p_max_mhz)
+        if e_max_mhz is not None:
+            write_freq(topo["e_cpus"], "scaling_max_freq", e_max_mhz)
+        if p_min_mhz is not None:
+            write_freq(topo["p_cpus"], "scaling_min_freq", p_min_mhz)
+        if e_min_mhz is not None:
+            write_freq(topo["e_cpus"], "scaling_min_freq", e_min_mhz)
+
+        return success
+
+
+def parse_sysfs_cpulist(path: str) -> list[int]:
+    """Parses sysfs cpu list format (e.g., '0-3,5' -> [0, 1, 2, 3, 5])."""
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r") as f:
+            text = f.read().strip()
+        cpus = []
+        for part in text.split(","):
+            part = part.strip()
+            if "-" in part:
+                s, e = part.split("-")
+                cpus.extend(range(int(s), int(e) + 1))
+            elif part.isdigit():
+                cpus.append(int(part))
+        return cpus
+    except Exception:
+        return []
+
+
+def get_cpu_topology_info() -> dict:
+    """Discovers core types (P-core, E-core) and frequency bounds at runtime without hardcoded CPU numbers."""
+    p_cpus = parse_sysfs_cpulist("/sys/devices/cpu_core/cpus")
+    e_cpus = parse_sysfs_cpulist("/sys/devices/cpu_atom/cpus")
+
+    # Fallback if kernel does not expose cpu_core / cpu_atom
+    if not p_cpus and not e_cpus:
+        all_cpus = [
+            int(os.path.basename(p)[3:])
+            for p in glob.glob("/sys/devices/system/cpu/cpu[0-9]*")
+            if os.path.basename(p)[3:].isdigit()
+        ]
+        all_cpus.sort()
+        p_cpus = all_cpus[:4] if len(all_cpus) >= 4 else all_cpus
+        e_cpus = all_cpus[4:] if len(all_cpus) > 4 else []
+
+    def get_freq_bounds(cpus: list[int], fallback_min: int, fallback_max: int) -> tuple[int, int]:
+        if not cpus:
+            return fallback_min, fallback_max
+        first_cpu = cpus[0]
+        min_path = f"/sys/devices/system/cpu/cpu{first_cpu}/cpufreq/cpuinfo_min_freq"
+        max_path = f"/sys/devices/system/cpu/cpu{first_cpu}/cpufreq/cpuinfo_max_freq"
+        min_khz = fallback_min
+        max_khz = fallback_max
+        if os.path.exists(min_path):
+            try:
+                with open(min_path, "r") as f:
+                    min_khz = int(f.read().strip())
+            except (OSError, ValueError):
+                pass
+        if os.path.exists(max_path):
+            try:
+                with open(max_path, "r") as f:
+                    max_khz = int(f.read().strip())
+            except (OSError, ValueError):
+                pass
+        return min_khz, max_khz
+
+    p_min_khz, p_max_khz = get_freq_bounds(p_cpus, 400000, 4700000)
+    e_min_khz, e_max_khz = get_freq_bounds(e_cpus, 400000, 3500000)
+
+    return {
+        "p_cpus": p_cpus,
+        "e_cpus": e_cpus,
+        "p_min_khz": p_min_khz,
+        "p_max_khz": p_max_khz,
+        "e_min_khz": e_min_khz,
+        "e_max_khz": e_max_khz,
+        "p_min_mhz": p_min_khz // 1000,
+        "p_max_mhz": p_max_khz // 1000,
+        "e_min_mhz": e_min_khz // 1000,
+        "e_max_mhz": e_max_khz // 1000,
+        "p_supported": len(p_cpus) > 0,
+        "e_supported": len(e_cpus) > 0,
+    }

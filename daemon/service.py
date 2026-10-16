@@ -16,7 +16,7 @@ import threading
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from core.hardware import HardwareController
+from core.hardware import HardwareController, get_cpu_topology_info
 from core.telemetry import TelemetryReader
 from core.profiles import DEFAULT_PROFILES
 
@@ -84,6 +84,24 @@ class DaemonService:
         gov = str(settings.get("cpu_governor", "powersave"))
         clamped["cpu_governor"] = gov if gov in ("performance", "powersave") else "powersave"
 
+        # 8. CPU Clock Limits (P-core & E-core scaling_max_freq / scaling_min_freq)
+        topo = get_cpu_topology_info()
+        if "p_core_max_mhz" in settings:
+            raw_p = int(settings["p_core_max_mhz"])
+            clamped["p_core_max_mhz"] = max(topo["p_min_mhz"], min(topo["p_max_mhz"], raw_p))
+        if "e_core_max_mhz" in settings:
+            raw_e = int(settings["e_core_max_mhz"])
+            clamped["e_core_max_mhz"] = max(topo["e_min_mhz"], min(topo["e_max_mhz"], raw_e))
+
+        if "p_core_min_mhz" in settings:
+            raw_p_min = int(settings["p_core_min_mhz"])
+            limit_max = clamped.get("p_core_max_mhz", topo["p_max_mhz"])
+            clamped["p_core_min_mhz"] = max(topo["p_min_mhz"], min(limit_max, raw_p_min))
+        if "e_core_min_mhz" in settings:
+            raw_e_min = int(settings["e_core_min_mhz"])
+            limit_max = clamped.get("e_core_max_mhz", topo["e_max_mhz"])
+            clamped["e_core_min_mhz"] = max(topo["e_min_mhz"], min(limit_max, raw_e_min))
+
         return clamped
 
     def apply_current_settings(self):
@@ -106,6 +124,14 @@ class DaemonService:
                 # 5. CPU Governor & EPP
                 self.hw.set_cpu_epp(s["cpu_epp"])
                 self.hw.set_cpu_governor(s["cpu_governor"])
+
+                # 6. CPU Clock Frequencies (P-core & E-core)
+                self.hw.set_cpu_frequencies(
+                    p_max_mhz=s.get("p_core_max_mhz"),
+                    e_max_mhz=s.get("e_core_max_mhz"),
+                    p_min_mhz=s.get("p_core_min_mhz"),
+                    e_min_mhz=s.get("e_core_min_mhz"),
+                )
 
             except Exception as e:
                 print(f"[!] Error applying settings: {e}", file=sys.stderr)

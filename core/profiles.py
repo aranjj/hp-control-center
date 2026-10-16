@@ -22,7 +22,9 @@ DEFAULT_PROFILES = {
         "gpu_power_mode": "base",
         "turbo_boost": True,
         "cpu_epp": "performance",
-        "cpu_governor": "performance",
+        "cpu_governor": "powersave",
+        "p_core_max_mhz": 4700,
+        "e_core_max_mhz": 3500,
     },
     "balanced": {
         "name": "Daily Balanced",
@@ -38,6 +40,8 @@ DEFAULT_PROFILES = {
         "turbo_boost": True,
         "cpu_epp": "balance_performance",
         "cpu_governor": "powersave",
+        "p_core_max_mhz": 4700,
+        "e_core_max_mhz": 3500,
     },
     "eco_quiet": {
         "name": "Silent & Eco",
@@ -53,6 +57,8 @@ DEFAULT_PROFILES = {
         "turbo_boost": False,
         "cpu_epp": "power",
         "cpu_governor": "powersave",
+        "p_core_max_mhz": 2400,
+        "e_core_max_mhz": 2000,
     },
 }
 

@@ -39,6 +39,7 @@ from core.telemetry import TelemetryReader
 from core.profiles import ProfileManager
 from core.display import DisplayManager
 from core.sysinfo import SystemInfoReader
+from core.hardware import get_cpu_topology_info
 from ui.styles import (
     STATUS_OK,
     STATUS_WARN,
@@ -49,6 +50,7 @@ from ui.styles import (
 from ui.widgets import (
     StatCard,
     SliderSetting,
+    FreqSliderSetting,
     CollapsibleSection,
     SegmentedControl,
     RevertCountdownDialog,
@@ -423,6 +425,75 @@ class MainWindow(QMainWindow):
         title_clk = QLabel("CPU Clock Limits")
         title_clk.setProperty("class", "SectionTitle")
         grid_clk.addWidget(title_clk, 0, 0, 1, 3)
+
+        topo = get_cpu_topology_info()
+        self.cpu_topo = topo
+
+        # P-core max frequency slider
+        self.slider_p_max = FreqSliderSetting(
+            "P-core max frequency",
+            topo["p_min_mhz"],
+            topo["p_max_mhz"],
+            topo["p_max_mhz"],
+            label_width=LABEL_COL_WIDTH,
+        )
+        self.slider_p_max.valueChanged.connect(self._on_setting_modified)
+        self.slider_p_max.add_to_grid(grid_clk, 1)
+        if not topo["p_supported"]:
+            self.slider_p_max.set_enabled(False, "P-cores not detected on this system")
+
+        # E-core max frequency slider
+        self.slider_e_max = FreqSliderSetting(
+            "E-core max frequency",
+            topo["e_min_mhz"],
+            topo["e_max_mhz"],
+            topo["e_max_mhz"],
+            label_width=LABEL_COL_WIDTH,
+        )
+        self.slider_e_max.valueChanged.connect(self._on_setting_modified)
+        self.slider_e_max.add_to_grid(grid_clk, 2)
+        if not topo["e_supported"]:
+            self.slider_e_max.set_enabled(False, "E-cores not detected on this system")
+
+        # Optional minimum frequency sliders in an Advanced collapsible inside this card
+        self.clk_advanced_sec = CollapsibleSection("Advanced Minimum Frequency Limits", is_expanded=False)
+        clk_adv_widget = QWidget()
+        clk_adv_grid = QGridLayout(clk_adv_widget)
+        clk_adv_grid.setContentsMargins(0, 6, 0, 6)
+        clk_adv_grid.setHorizontalSpacing(16)
+        clk_adv_grid.setVerticalSpacing(8)
+        clk_adv_grid.setColumnMinimumWidth(0, LABEL_COL_WIDTH)
+        clk_adv_grid.setColumnStretch(0, 0)
+        clk_adv_grid.setColumnStretch(1, 1)
+        clk_adv_grid.setColumnStretch(2, 0)
+
+        self.slider_p_min = FreqSliderSetting(
+            "P-core min frequency",
+            topo["p_min_mhz"],
+            topo["p_max_mhz"],
+            topo["p_min_mhz"],
+            label_width=LABEL_COL_WIDTH,
+        )
+        self.slider_p_min.valueChanged.connect(self._on_setting_modified)
+        self.slider_p_min.add_to_grid(clk_adv_grid, 0)
+        if not topo["p_supported"]:
+            self.slider_p_min.set_enabled(False, "P-cores not detected on this system")
+
+        self.slider_e_min = FreqSliderSetting(
+            "E-core min frequency",
+            topo["e_min_mhz"],
+            topo["e_max_mhz"],
+            topo["e_min_mhz"],
+            label_width=LABEL_COL_WIDTH,
+        )
+        self.slider_e_min.valueChanged.connect(self._on_setting_modified)
+        self.slider_e_min.add_to_grid(clk_adv_grid, 1)
+        if not topo["e_supported"]:
+            self.slider_e_min.set_enabled(False, "E-cores not detected on this system")
+
+        self.clk_advanced_sec.add_widget(clk_adv_widget)
+        grid_clk.addWidget(self.clk_advanced_sec, 3, 0, 1, 3)
+
         layout.addWidget(self.card_clk)
 
         # ----------------------------------------------------
@@ -1125,7 +1196,12 @@ class MainWindow(QMainWindow):
                 self.nav_buttons[idx].setIcon(make_tinted_icon(icon_name, c, 18))
 
         # Slider reset buttons
-        for slider in [getattr(self, s, None) for s in ["slider_pl1", "slider_pl2", "slider_gpu_min", "slider_gpu_max"]]:
+        for slider in [
+            getattr(self, s, None) for s in [
+                "slider_pl1", "slider_pl2", "slider_gpu_min", "slider_gpu_max",
+                "slider_p_max", "slider_e_max", "slider_p_min", "slider_e_min",
+            ]
+        ]:
             if slider and hasattr(slider, "recolor_icon"):
                 slider.recolor_icon(btn_text_color)
 
@@ -1273,13 +1349,23 @@ class MainWindow(QMainWindow):
         if idx_epp >= 0:
             self.combo_epp.setCurrentIndex(idx_epp)
 
+        topo = getattr(self, "cpu_topo", None) or get_cpu_topology_info()
+        if hasattr(self, "slider_p_max"):
+            self.slider_p_max.set_value(prof.get("p_core_max_mhz", topo["p_max_mhz"]))
+        if hasattr(self, "slider_e_max"):
+            self.slider_e_max.set_value(prof.get("e_core_max_mhz", topo["e_max_mhz"]))
+        if hasattr(self, "slider_p_min"):
+            self.slider_p_min.set_value(prof.get("p_core_min_mhz", topo["p_min_mhz"]))
+        if hasattr(self, "slider_e_min"):
+            self.slider_e_min.set_value(prof.get("e_core_min_mhz", topo["e_min_mhz"]))
+
         self.profile_segmented.set_selected(key)
         self.profile_mgr.current_profile_key = key
         self._is_loading_profile = False
         self._recalculate_unsaved_changes()
 
     def _collect_ui_settings(self) -> dict:
-        return {
+        settings = {
             "pl1_w": float(self.slider_pl1.get_value()),
             "pl2_w": float(self.slider_pl2.get_value()),
             "sync_mmio": self.chk_sync_mmio.isChecked(),
@@ -1289,8 +1375,18 @@ class MainWindow(QMainWindow):
             "gpu_power_mode": self.combo_gpu_power.currentText(),
             "turbo_boost": self.chk_turbo.isChecked(),
             "cpu_epp": self.combo_epp.currentText(),
-            "cpu_governor": "performance" if self.combo_epp.currentText() == "performance" else "powersave",
+            "cpu_governor": "powersave",
         }
+        if hasattr(self, "slider_p_max"):
+            settings["p_core_max_mhz"] = self.slider_p_max.get_value()
+        if hasattr(self, "slider_e_max"):
+            settings["e_core_max_mhz"] = self.slider_e_max.get_value()
+        if hasattr(self, "clk_advanced_sec") and self.clk_advanced_sec.is_expanded:
+            if hasattr(self, "slider_p_min"):
+                settings["p_core_min_mhz"] = self.slider_p_min.get_value()
+            if hasattr(self, "slider_e_min"):
+                settings["e_core_min_mhz"] = self.slider_e_min.get_value()
+        return settings
 
     def _recalculate_unsaved_changes(self):
         current = self._collect_ui_settings()
@@ -1557,6 +1653,16 @@ class MainWindow(QMainWindow):
         self.card_ecore.update_value(
             f"{e_ghz:.2f}", f"{cpu['e_threads_count']} Threads Active", numeric_val=e_ghz
         )
+
+        # Live requested vs actual updates on CPU Clock Limits sliders
+        if hasattr(self, "slider_p_max"):
+            self.slider_p_max.update_actual_freq(cpu.get("p_core_mhz"))
+        if hasattr(self, "slider_e_max"):
+            self.slider_e_max.update_actual_freq(cpu.get("e_core_mhz"))
+        if hasattr(self, "slider_p_min"):
+            self.slider_p_min.update_actual_freq(cpu.get("p_core_mhz"))
+        if hasattr(self, "slider_e_min"):
+            self.slider_e_min.update_actual_freq(cpu.get("e_core_mhz"))
 
         # Power source badge
         if data["ac_connected"]:

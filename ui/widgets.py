@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QDialog,
     QCheckBox,
+    QDoubleSpinBox,
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QObject, QByteArray, QSize, QRectF
 from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen, QLinearGradient, QIcon, QPixmap
@@ -450,6 +451,166 @@ class SliderSetting(QObject):
         self.max_lbl.setText(f"{max_val} {self.unit}")
 
 
+class FreqSliderSetting(QObject):
+    """
+    CPU Frequency Slider Setting component with unified two-column grid support:
+    - Col 0: Fixed-width label column
+    - Col 1: Equal-width horizontal slider with min/max labels and live requested vs actual readout
+    - Col 2: Trailing editable value field (GHz, QDoubleSpinBox) and per-slider reset button right-aligned
+    """
+
+    valueChanged = Signal(int)  # Emits value in MHz
+
+    def __init__(
+        self,
+        label: str,
+        min_mhz: int,
+        max_mhz: int,
+        default_mhz: int,
+        step_mhz: int = 100,
+        label_width: int = 240,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.min_mhz = min_mhz
+        self.max_mhz = max_mhz
+        self.default_mhz = default_mhz
+        self.step_mhz = step_mhz
+        self._block_signals = False
+        self._last_act_mhz = None
+
+        # Col 0: Label
+        self.title_lbl = QLabel(label)
+        self.title_lbl.setProperty("class", "FormLabel")
+        self.title_lbl.setFixedWidth(label_width)
+
+        # Col 1: Slider box
+        self.slider_widget = QWidget()
+        slider_box = QVBoxLayout(self.slider_widget)
+        slider_box.setSpacing(2)
+        slider_box.setContentsMargins(0, 0, 0, 0)
+
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(min_mhz, max_mhz)
+        self.slider.setSingleStep(step_mhz)
+        self.slider.setPageStep(step_mhz * 2)
+        self.slider.setValue(default_mhz)
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        slider_box.addWidget(self.slider)
+
+        range_row = QHBoxLayout()
+        range_row.setContentsMargins(0, 0, 0, 0)
+        self.min_lbl = QLabel(f"{min_mhz / 1000.0:.1f} GHz")
+        self.min_lbl.setProperty("class", "Footnote")
+        range_row.addWidget(self.min_lbl)
+
+        # Live requested vs actual readout under slider
+        self.status_lbl = QLabel(f"Cap: {default_mhz / 1000.0:.2f} GHz  •  Actual Avg: -- GHz")
+        self.status_lbl.setProperty("class", "Footnote")
+        self.status_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+        self.status_lbl.setAlignment(Qt.AlignCenter)
+        range_row.addWidget(self.status_lbl, alignment=Qt.AlignCenter)
+
+        self.max_lbl = QLabel(f"{max_mhz / 1000.0:.1f} GHz")
+        self.max_lbl.setProperty("class", "Footnote")
+        range_row.addWidget(self.max_lbl, alignment=Qt.AlignRight)
+        slider_box.addLayout(range_row)
+
+        # Col 2: Trailing controls right-aligned (DoubleSpinBox in GHz + Reset)
+        self.trailing_widget = QWidget()
+        self.trailing_widget.setFixedWidth(124)
+        trailing = QHBoxLayout(self.trailing_widget)
+        trailing.setSpacing(6)
+        trailing.setContentsMargins(0, 0, 0, 0)
+
+        self.spin = QDoubleSpinBox()
+        self.spin.setRange(min_mhz / 1000.0, max_mhz / 1000.0)
+        self.spin.setDecimals(2)
+        self.spin.setSingleStep(step_mhz / 1000.0)
+        self.spin.setValue(default_mhz / 1000.0)
+        self.spin.setSuffix(" GHz")
+        self.spin.setFixedWidth(84)
+        self.spin.setAlignment(Qt.AlignCenter)
+        self.spin.setProperty("class", "SettingSpin")
+        self.spin.valueChanged.connect(self._on_spin_changed)
+        trailing.addWidget(self.spin)
+
+        self.btn_reset = QToolButton()
+        self.btn_reset.setIcon(make_tinted_icon("view-refresh-symbolic", QColor("#ffffff"), 14))
+        self.btn_reset.setToolTip(f"Reset to default ({default_mhz / 1000.0:.2f} GHz)")
+        self.btn_reset.setProperty("class", "SettingReset")
+        self.btn_reset.setCursor(Qt.PointingHandCursor)
+        self.btn_reset.clicked.connect(self.reset_to_default)
+        trailing.addWidget(self.btn_reset)
+
+    def add_to_grid(self, grid: QGridLayout, row: int):
+        grid.addWidget(self.title_lbl, row, 0, 1, 1, Qt.AlignVCenter)
+        grid.addWidget(self.slider_widget, row, 1, 1, 1)
+        grid.addWidget(self.trailing_widget, row, 2, 1, 1, Qt.AlignVCenter | Qt.AlignRight)
+
+    def recolor_icon(self, color: QColor):
+        self.btn_reset.setIcon(make_tinted_icon("view-refresh-symbolic", color, 14))
+
+    def _on_slider_changed(self, val: int):
+        if self._block_signals:
+            return
+        self._block_signals = True
+        self.spin.setValue(val / 1000.0)
+        self._update_status_lbl()
+        self._block_signals = False
+        self.valueChanged.emit(val)
+
+    def _on_spin_changed(self, val: float):
+        if self._block_signals:
+            return
+        self._block_signals = True
+        mhz = int(round(val * 1000.0))
+        self.slider.setValue(mhz)
+        self._update_status_lbl()
+        self._block_signals = False
+        self.valueChanged.emit(mhz)
+
+    def _update_status_lbl(self, act_mhz: int = None):
+        if act_mhz is not None:
+            self._last_act_mhz = act_mhz
+        else:
+            act_mhz = self._last_act_mhz
+
+        cap_ghz = self.get_value() / 1000.0
+        if act_mhz is not None and act_mhz > 0:
+            act_ghz = act_mhz / 1000.0
+            self.status_lbl.setText(f"Cap: {cap_ghz:.2f} GHz  •  Actual Avg: {act_ghz:.2f} GHz")
+        else:
+            self.status_lbl.setText(f"Cap: {cap_ghz:.2f} GHz  •  Actual Avg: Idle")
+
+    def update_actual_freq(self, act_mhz: int = None):
+        self._update_status_lbl(act_mhz)
+
+    def get_value(self) -> int:
+        return self.slider.value()
+
+    def set_value(self, mhz: int):
+        self._block_signals = True
+        clamped = max(self.min_mhz, min(self.max_mhz, mhz))
+        self.slider.setValue(clamped)
+        self.spin.setValue(clamped / 1000.0)
+        self._update_status_lbl()
+        self._block_signals = False
+
+    def reset_to_default(self):
+        self.set_value(self.default_mhz)
+        self.valueChanged.emit(self.default_mhz)
+
+    def set_enabled(self, enabled: bool, reason: str = ""):
+        self.slider.setEnabled(enabled)
+        self.spin.setEnabled(enabled)
+        self.btn_reset.setEnabled(enabled)
+        if not enabled and reason:
+            self.title_lbl.setToolTip(reason)
+            self.slider.setToolTip(reason)
+            self.status_lbl.setText(reason)
+
+
 class CollapsibleSection(QFrame):
     """Collapsible container with a toggle header."""
 
@@ -488,6 +649,10 @@ class CollapsibleSection(QFrame):
 
     def add_layout(self, layout):
         self.content_layout.addLayout(layout)
+
+    @property
+    def is_expanded(self) -> bool:
+        return self.content_widget.isVisible()
 
 
 class SegmentedControl(QFrame):
