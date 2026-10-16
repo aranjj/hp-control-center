@@ -434,9 +434,11 @@ class MainWindow(QMainWindow):
     # ==============================================
 
     def _build_dashboard_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 4, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 4, 10, 0)
         layout.setSpacing(12)
 
         dash_title = QLabel("LIVE TELEMETRY HUD")
@@ -490,7 +492,8 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(hud_grid)
         layout.addStretch()
-        return widget
+        scroll.setWidget(content)
+        return scroll
 
     def _build_performance_tab(self) -> QWidget:
         scroll = QScrollArea()

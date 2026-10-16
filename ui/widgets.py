@@ -230,7 +230,7 @@ class SparklineWidget(QWidget):
         self.max_floor = max_floor
         self._custom_accent = accent_color
         self.data = deque(maxlen=maxlen)
-        self.setFixedHeight(74)
+        self.setFixedHeight(64)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
 
     def set_custom_accent(self, color: QColor):
@@ -375,8 +375,8 @@ class StatCard(QFrame):
         self._accent_color = QColor(accent_color) if accent_color else None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(6)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(4)
 
         # Header Row: Indicator Ring + (Title & Subtitle stacked) + Badge
         top_row = QHBoxLayout()
@@ -413,16 +413,16 @@ class StatCard(QFrame):
         # Value Row
         val_row = QHBoxLayout()
         val_row.setSpacing(6)
-        val_row.setContentsMargins(0, 2, 0, 4)
+        val_row.setContentsMargins(0, 0, 0, 0)
 
         self.val_lbl = QLabel(initial_value)
-        self.val_lbl.setStyleSheet("font-size: 28px; font-weight: 800; color: palette(window-text);")
+        self.val_lbl.setStyleSheet("font-size: 24px; font-weight: 800; color: palette(window-text);")
         val_row.addWidget(self.val_lbl)
 
         if unit:
             self.unit_lbl = QLabel(unit)
             col_str = self._accent_color.name() if self._accent_color else "palette(highlight)"
-            self.unit_lbl.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {col_str}; margin-bottom: 4px;")
+            self.unit_lbl.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {col_str}; margin-bottom: 3px;")
             self.unit_lbl.setAlignment(Qt.AlignBottom)
             val_row.addWidget(self.unit_lbl)
         val_row.addStretch()
@@ -462,16 +462,16 @@ class StatCard(QFrame):
 
         # If explicit status color is passed (e.g. for temperature or throttle)
         if color:
-            self.val_lbl.setStyleSheet(f"font-size: 28px; font-weight: 800; color: {color};")
+            self.val_lbl.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {color};")
             self.ring.set_color(QColor(color))
             if hasattr(self, "unit_lbl"):
-                self.unit_lbl.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {color}; margin-bottom: 4px;")
+                self.unit_lbl.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {color}; margin-bottom: 3px;")
         else:
-            self.val_lbl.setStyleSheet("font-size: 28px; font-weight: 800; color: palette(window-text);")
+            self.val_lbl.setStyleSheet("font-size: 24px; font-weight: 800; color: palette(window-text);")
             col = self._accent_color or self.palette().highlight().color()
             self.ring.set_color(col)
             if hasattr(self, "unit_lbl"):
-                self.unit_lbl.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {col.name()}; margin-bottom: 4px;")
+                self.unit_lbl.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {col.name()}; margin-bottom: 3px;")
 
         if badge_text:
             self.badge_lbl.setText(badge_text)
