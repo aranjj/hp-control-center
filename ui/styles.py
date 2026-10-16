@@ -197,7 +197,7 @@ QToolButton.SectionToggle:hover {{
     color: palette(highlight);
 }}
 
-/* Checkboxes */
+/* Checkboxes & Toggle Switches */
 QCheckBox {{
     spacing: 8px;
     font-weight: 500;
@@ -212,6 +212,16 @@ QCheckBox::indicator {{
 QCheckBox::indicator:checked {{
     background-color: palette(highlight);
     border: 1px solid palette(highlight);
+}}
+
+ToggleSwitch {{
+    background: transparent;
+    border: none;
+    font-weight: 500;
+}}
+ToggleSwitch::indicator {{
+    width: 0px;
+    height: 0px;
 }}
 
 /* Combo Box */

@@ -9,6 +9,7 @@ Includes:
 - RevertCountdownDialog for safety revert
 """
 
+import logging
 import re
 from collections import deque
 from PySide6.QtWidgets import (
@@ -23,31 +24,130 @@ from PySide6.QtWidgets import (
     QToolButton,
     QWidget,
     QDialog,
+    QCheckBox,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QObject
+from PySide6.QtCore import Qt, Signal, QTimer, QObject, QByteArray, QSize, QRectF
 from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen, QLinearGradient, QIcon, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 
 from ui.styles import STATUS_WARN, STATUS_CRITICAL
 
+logger = logging.getLogger(__name__)
+
+BUNDLED_SVGS = {
+    "utilities-system-monitor-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M1 2C.448 2 0 2.448 0 3v9c0 .552.448 1 1 1h5v1H4v1h8v-1h-2v-1h5c.552 0 1-.448 1-1V3c0-.552-.448-1-1-1H1zm0 1h14v8H1V3zm6 1l-2 3.5L3.5 5 2 6.5 2.7 7.2l.8-.8 1.5 2.5 2-3.5 1.5 2.5.7-.7-1.2-2z"/></svg>""",
+    "speedometer-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M8 1a7 7 0 0 0-7 7c0 2.485 1.303 4.673 3.25 5.906L5 12.5A5.5 5.5 0 0 1 2.5 8 5.5 5.5 0 0 1 8 2.5 5.5 5.5 0 0 1 13.5 8a5.5 5.5 0 0 1-2.5 4.5l.75 1.406A7 7 0 0 0 15 8a7 7 0 0 0-7-7zm0 6a1 1 0 0 0-1 1 1 1 0 0 0 .156.531l-2.656 2.657.708.707 2.656-2.656A1 1 0 0 0 8 9a1 1 0 0 0 1-1 1 1 0 0 0-1-1z"/></svg>""",
+    "video-display-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M1 2C.448 2 0 2.448 0 3v8c0 .552.448 1 1 1h5v2H4v1h8v-1h-2v-2h5c.552 0 1-.448 1-1V3c0-.552-.448-1-1-1H1zm0 1h14v7H1V3zm4 1.5v4l4-2-4-2z"/></svg>""",
+    "preferences-desktop-display-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M1 2C.448 2 0 2.448 0 3v8c0 .552.448 1 1 1h5v2H4v1h8v-1h-2v-2h5c.552 0 1-.448 1-1V3c0-.552-.448-1-1-1H1zm0 1h14v7H1V3zm2 2h10v1H3V5zm0 2h7v1H3V7z"/></svg>""",
+    "temperature-cold-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M8 1a2 2 0 0 0-2 2v6.172A3.5 3.5 0 0 0 5 12a3.5 3.5 0 0 0 6 0 3.5 3.5 0 0 0-1-2.828V3a2 2 0 0 0-2-2zm0 1a1 1 0 0 1 1 1v2H7V3a1 1 0 0 1 1-1zm1 4v2H7V6h2zm0 3v.688a2.5 2.5 0 0 1 1.5 2.312 2.5 2.5 0 0 1-5 0A2.5 2.5 0 0 1 7 9.688V9h2z"/></svg>""",
+    "help-about-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1a6 6 0 1 1 0 12A6 6 0 0 1 8 2zm-.5 2v2h1V4h-1zm0 3v5h1V7h-1z"/></svg>""",
+    "preferences-system-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M7 1v1.062a5 5 0 0 0-1.781.75L4.47 2.06 3.062 3.47l.75.75A5 5 0 0 0 3.062 6H2v2h1.062a5 5 0 0 0 .75 1.781l-.75.75 1.407 1.407.75-.75A5 5 0 0 0 7 11.938V13h2v-1.062a5 5 0 0 0 1.781-.75l.75.75 1.407-1.407-.75-.75A5 5 0 0 0 12.938 8H14V6h-1.062a5 5 0 0 0-.75-1.781l.75-.75L11.53 2.06l-.75.75A5 5 0 0 0 9 2.062V1H7zm1 4a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></svg>""",
+    "application-menu-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M2 3v2h12V3H2zm0 4v2h12V7H2zm0 4v2h12v-2H2z"/></svg>""",
+    "view-refresh-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M8 2a6 6 0 0 0-5.656 4H1l2.5 3L6 6H3.39A5 5 0 1 1 8 13a4.99 4.99 0 0 1-3.535-1.465l-.707.707A6 6 0 1 0 8 2z"/></svg>""",
+    "edit-copy-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M4 1C3.448 1 3 1.448 3 2v9h1V2h8V1H4zm3 2C5.895 3 5 3.895 5 5v9c0 1.105.895 2 2 2h6c1.105 0 2-.895 2-2V5c0-1.105-.895-2-2-2H7zm0 1h6c.552 0 1 .448 1 1v9c0 .552-.448 1-1 1H7c-.552 0-1-.448-1-1V5c0-.552.448-1 1-1z"/></svg>""",
+    "document-open-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M1 2v12h14V5H7L5 2H1zm1 1h2.55l2 3H14v1H3l-1.5 6V3zm1.625 5h10.875l-1.5 5H2.125l1.5-5z"/></svg>""",
+    "brightness-low-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3" fill="currentColor"/><path fill="currentColor" d="M7.5 1h1v2h-1zM7.5 13h1v2h-1zM1 7.5h2v1H1zM13 7.5h2v1h-2zM3.05 3.757l.707-.707 1.414 1.414-.707.707zM10.829 11.536l.707-.707 1.414 1.414-.707.707zM3.757 12.95l-.707-.707 1.414-1.414.707.707zM11.536 5.171l-.707-.707 1.414-1.414.707.707z"/></svg>""",
+    "brightness-high-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="4" fill="currentColor"/><path fill="currentColor" d="M7.5 0h1v3h-1zM7.5 13h1v3h-1zM0 7.5h3v1H0zM13 7.5h3v1h-3zM2.343 3.05l.707-.707 2.121 2.121-.707.707zM10.829 11.536l.707-.707 2.121 2.121-.707.707zM3.05 13.657l-.707-.707 2.121-2.121.707.707zM11.536 5.171l-.707-.707 2.121-2.121.707.707z"/></svg>""",
+    "dialog-warning-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M8 1L0 15h16L8 1zm0 3l5.5 10H2.5L8 4zm-.5 3v3h1V7h-1zm0 4v1.5h1V11h-1z"/></svg>""",
+    "preferences-system-performance-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 2a5 5 0 0 1 5 5h-2a3 3 0 0 0-3-3V3zm-1 3v2.15A1.5 1.5 0 0 0 8 11a1.5 1.5 0 0 0 1.45-1.12l2.3-1.33A5 5 0 0 1 8 13 5 5 0 0 1 3 8a5 5 0 0 1 4-4.9V6z"/></svg>""",
+    "battery-profile-performance-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M4 2v1H2v11h11V3h-2V2H4zm-1 2h9v9H3V4zm5 1L5 9h3l-1 3 4-4H8l1-3z"/></svg>""",
+    "application-exit-symbolic": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M7 2v2H3v8h4v2H1V2h6zm3.293 2.293l3.707 3.707-3.707 3.707-1.414-1.414L10.172 9H6V7h4.172L8.879 5.707l1.414-1.414z"/></svg>"""
+}
+
 
 def make_tinted_icon(theme_name: str, color: QColor, size: int = 16) -> QIcon:
-    """Renders a monochrome symbolic Breeze icon tinted with the specified QColor."""
-    base_ic = QIcon.fromTheme(theme_name)
-    if base_ic.isNull() and "-symbolic" in theme_name:
-        base_ic = QIcon.fromTheme(theme_name.replace("-symbolic", ""))
-    pix = base_ic.pixmap(size, size)
-    if pix.isNull():
-        return base_ic
+    """Renders a monochrome symbolic Breeze icon tinted with the specified QColor.
+    Uses QIcon.fromTheme only as an optional override when available in the system theme,
+    falling back to bundled SVG symbolic icons with a warning log if missing or invalid."""
+    if QIcon.hasThemeIcon(theme_name):
+        base_ic = QIcon.fromTheme(theme_name)
+        pix = base_ic.pixmap(size, size)
+        if not pix.isNull():
+            tinted = QPixmap(pix.size())
+            tinted.fill(Qt.transparent)
+            p = QPainter(tinted)
+            p.drawPixmap(0, 0, pix)
+            p.setCompositionMode(QPainter.CompositionMode_SourceIn)
+            p.fillRect(tinted.rect(), color)
+            p.end()
+            return QIcon(tinted)
 
-    tinted = QPixmap(pix.size())
-    tinted.fill(Qt.transparent)
-    p = QPainter(tinted)
-    p.drawPixmap(0, 0, pix)
-    p.setCompositionMode(QPainter.CompositionMode_SourceIn)
-    p.fillRect(tinted.rect(), color)
-    p.end()
+    # Fallback to bundled SVG
+    if theme_name in BUNDLED_SVGS:
+        if not QIcon.hasThemeIcon(theme_name):
+            logger.warning("Theme icon '%s' failed to resolve; using bundled fallback SVG.", theme_name)
+        svg_str = BUNDLED_SVGS[theme_name].replace("currentColor", color.name())
+        renderer = QSvgRenderer(QByteArray(svg_str.encode("utf-8")))
+        pix = QPixmap(size, size)
+        pix.fill(Qt.transparent)
+        p = QPainter(pix)
+        renderer.render(p)
+        p.end()
+        return QIcon(pix)
 
-    return QIcon(tinted)
+    logger.warning("Icon '%s' not found in system theme and not bundled.", theme_name)
+    return QIcon.fromTheme(theme_name)
+
+
+class ToggleSwitch(QCheckBox):
+    """Modern toggle switch widget adhering to KDE/Qt palette roles.
+    Unchecked = muted track (Mid) and knob on the left (WindowText).
+    Checked = accent-filled track (Highlight) and knob on the right (HighlightedText).
+    """
+
+    def __init__(self, text: str = "", parent: QWidget = None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedHeight(24)
+
+    def sizeHint(self) -> QSize:
+        fm = self.fontMetrics()
+        w = 42 + (10 + fm.horizontalAdvance(self.text()) if self.text() else 0)
+        h = max(24, fm.height())
+        return QSize(w, h)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        pal = self.palette()
+        is_chk = self.isChecked()
+        is_en = self.isEnabled()
+
+        track_w = 36.0
+        track_h = 20.0
+        track_y = (self.height() - track_h) / 2.0
+        track_x = 0.0
+
+        if is_chk:
+            track_col = pal.highlight().color() if is_en else pal.mid().color()
+            knob_col = pal.highlightedText().color() if is_en else pal.placeholderText().color()
+            knob_x = track_x + track_w - 17.0
+        else:
+            track_col = pal.mid().color() if is_en else pal.dark().color()
+            knob_col = pal.windowText().color() if is_en else pal.placeholderText().color()
+            knob_x = track_x + 3.0
+
+        knob_y = track_y + 3.0
+        knob_d = 14.0
+
+        # Track
+        p.setPen(Qt.NoPen)
+        p.setBrush(track_col)
+        p.drawRoundedRect(QRectF(track_x, track_y, track_w, track_h), 10.0, 10.0)
+
+        # Knob
+        p.setBrush(knob_col)
+        p.drawEllipse(QRectF(knob_x, knob_y, knob_d, knob_d))
+
+        # Text
+        if self.text():
+            p.setPen(pal.windowText().color() if is_en else pal.placeholderText().color())
+            text_x = int(track_x + track_w + 10.0)
+            text_rect = self.rect().adjusted(text_x, 0, 0, 0)
+            p.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self.text())
+
+        p.end()
 
 
 class SparklineWidget(QWidget):

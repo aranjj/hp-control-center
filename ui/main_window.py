@@ -53,6 +53,7 @@ from ui.widgets import (
     SegmentedControl,
     RevertCountdownDialog,
     make_tinted_icon,
+    ToggleSwitch,
 )
 
 SOCKET_PATH = "/tmp/hp_control_center.sock"
@@ -368,51 +369,127 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 4, 10, 0)
         layout.setSpacing(14)
 
-        card = QFrame()
-        card.setProperty("class", "CardFrame")
-        grid = QGridLayout(card)
-        grid.setContentsMargins(12, 12, 12, 12)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
-        grid.setColumnMinimumWidth(0, LABEL_COL_WIDTH)
-        grid.setColumnStretch(0, 0)
-        grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(2, 0)
+        # ----------------------------------------------------
+        # 1. Power Limits (PL1, PL2, Sync to MMIO)
+        # ----------------------------------------------------
+        card_pwr = QFrame()
+        card_pwr.setProperty("class", "CardFrame")
+        grid_pwr = QGridLayout(card_pwr)
+        grid_pwr.setContentsMargins(12, 12, 12, 12)
+        grid_pwr.setHorizontalSpacing(16)
+        grid_pwr.setVerticalSpacing(8)
+        grid_pwr.setColumnMinimumWidth(0, LABEL_COL_WIDTH)
+        grid_pwr.setColumnStretch(0, 0)
+        grid_pwr.setColumnStretch(1, 1)
+        grid_pwr.setColumnStretch(2, 0)
 
-        title = QLabel("RAPL & MMIO Turbo Power Limits")
-        title.setProperty("class", "SectionTitle")
-        grid.addWidget(title, 0, 0, 1, 3)
+        title_pwr = QLabel("Power Limits")
+        title_pwr.setProperty("class", "SectionTitle")
+        grid_pwr.addWidget(title_pwr, 0, 0, 1, 3)
 
-        # Two-column grid slider rows
         self.slider_pl1 = SliderSetting("PL1 Sustained Limit (Long-term)", 10, 30, 25, "W", label_width=LABEL_COL_WIDTH)
         self.slider_pl1.valueChanged.connect(self._on_pl1_changed)
-        self.slider_pl1.add_to_grid(grid, 1)
+        self.slider_pl1.add_to_grid(grid_pwr, 1)
 
         self.slider_pl2 = SliderSetting("PL2 Burst Limit (Short-term)", 10, 45, 28, "W", label_width=LABEL_COL_WIDTH)
         self.slider_pl2.valueChanged.connect(self._on_pl2_changed)
-        self.slider_pl2.add_to_grid(grid, 2)
+        self.slider_pl2.add_to_grid(grid_pwr, 2)
 
-        # Sync MMIO
         lbl_mmio = QLabel("MMIO Synchronization:")
         lbl_mmio.setProperty("class", "FormLabel")
         lbl_mmio.setFixedWidth(LABEL_COL_WIDTH)
-        self.chk_sync_mmio = QCheckBox("Sync to MMIO (MCHBAR 0x59A0 - Defeats EC lock)")
+        self.chk_sync_mmio = ToggleSwitch("Sync to MMIO (MCHBAR 0x59A0 - Defeats EC lock)")
         self.chk_sync_mmio.setChecked(True)
         self.chk_sync_mmio.toggled.connect(self._on_setting_modified)
-        grid.addWidget(lbl_mmio, 3, 0)
-        grid.addWidget(self.chk_sync_mmio, 3, 1, 1, 2)
+        grid_pwr.addWidget(lbl_mmio, 3, 0)
+        grid_pwr.addWidget(self.chk_sync_mmio, 3, 1, 1, 2)
 
-        # Processor Turbo
+        layout.addWidget(card_pwr)
+
+        # ----------------------------------------------------
+        # 2. CPU Clock Limits (Step 2)
+        # ----------------------------------------------------
+        self.card_clk = QFrame()
+        self.card_clk.setProperty("class", "CardFrame")
+        grid_clk = QGridLayout(self.card_clk)
+        grid_clk.setContentsMargins(12, 12, 12, 12)
+        grid_clk.setHorizontalSpacing(16)
+        grid_clk.setVerticalSpacing(8)
+        grid_clk.setColumnMinimumWidth(0, LABEL_COL_WIDTH)
+        grid_clk.setColumnStretch(0, 0)
+        grid_clk.setColumnStretch(1, 1)
+        grid_clk.setColumnStretch(2, 0)
+
+        title_clk = QLabel("CPU Clock Limits")
+        title_clk.setProperty("class", "SectionTitle")
+        grid_clk.addWidget(title_clk, 0, 0, 1, 3)
+        layout.addWidget(self.card_clk)
+
+        # ----------------------------------------------------
+        # 3. Core Management (Step 3)
+        # ----------------------------------------------------
+        self.card_core = QFrame()
+        self.card_core.setProperty("class", "CardFrame")
+        grid_core = QGridLayout(self.card_core)
+        grid_core.setContentsMargins(12, 12, 12, 12)
+        grid_core.setHorizontalSpacing(16)
+        grid_core.setVerticalSpacing(8)
+        grid_core.setColumnMinimumWidth(0, LABEL_COL_WIDTH)
+        grid_core.setColumnStretch(0, 0)
+        grid_core.setColumnStretch(1, 1)
+        grid_core.setColumnStretch(2, 0)
+
+        title_core = QLabel("Core Management")
+        title_core.setProperty("class", "SectionTitle")
+        grid_core.addWidget(title_core, 0, 0, 1, 3)
+        layout.addWidget(self.card_core)
+
+        # ----------------------------------------------------
+        # 4. Thermal Target (Step 4)
+        # ----------------------------------------------------
+        self.card_therm = QFrame()
+        self.card_therm.setProperty("class", "CardFrame")
+        grid_therm = QGridLayout(self.card_therm)
+        grid_therm.setContentsMargins(12, 12, 12, 12)
+        grid_therm.setHorizontalSpacing(16)
+        grid_therm.setVerticalSpacing(8)
+        grid_therm.setColumnMinimumWidth(0, LABEL_COL_WIDTH)
+        grid_therm.setColumnStretch(0, 0)
+        grid_therm.setColumnStretch(1, 1)
+        grid_therm.setColumnStretch(2, 0)
+
+        title_therm = QLabel("Thermal Target")
+        title_therm.setProperty("class", "SectionTitle")
+        grid_therm.addWidget(title_therm, 0, 0, 1, 3)
+        layout.addWidget(self.card_therm)
+
+        # ----------------------------------------------------
+        # 5. Behavior (Intel Turbo Boost toggle, EPP dropdown)
+        # ----------------------------------------------------
+        card_beh = QFrame()
+        card_beh.setProperty("class", "CardFrame")
+        grid_beh = QGridLayout(card_beh)
+        grid_beh.setContentsMargins(12, 12, 12, 12)
+        grid_beh.setHorizontalSpacing(16)
+        grid_beh.setVerticalSpacing(8)
+        grid_beh.setColumnMinimumWidth(0, LABEL_COL_WIDTH)
+        grid_beh.setColumnStretch(0, 0)
+        grid_beh.setColumnStretch(1, 1)
+        grid_beh.setColumnStretch(2, 0)
+
+        title_beh = QLabel("CPU Behavior")
+        title_beh.setProperty("class", "SectionTitle")
+        grid_beh.addWidget(title_beh, 0, 0, 1, 3)
+
         lbl_turbo = QLabel("Processor Turbo:")
         lbl_turbo.setProperty("class", "FormLabel")
         lbl_turbo.setFixedWidth(LABEL_COL_WIDTH)
-        self.chk_turbo = QCheckBox("Intel Turbo Boost (Up to 4.7 GHz)")
+        self.chk_turbo = ToggleSwitch("Intel Turbo Boost (Up to 4.7 GHz)")
         self.chk_turbo.setChecked(True)
         self.chk_turbo.toggled.connect(self._on_setting_modified)
-        grid.addWidget(lbl_turbo, 4, 0)
-        grid.addWidget(self.chk_turbo, 4, 1, 1, 2)
+        grid_beh.addWidget(lbl_turbo, 1, 0)
+        grid_beh.addWidget(self.chk_turbo, 1, 1, 1, 2)
 
-        # EPP Dropdown (equal width COMBO_WIDTH, left-aligned in Col 1)
         lbl_epp = QLabel("Energy Bias Preference (EPP):")
         lbl_epp.setProperty("class", "FormLabel")
         lbl_epp.setFixedWidth(LABEL_COL_WIDTH)
@@ -420,12 +497,14 @@ class MainWindow(QMainWindow):
         self.combo_epp.setFixedWidth(COMBO_WIDTH)
         self.combo_epp.addItems(["performance", "balance_performance", "balance_power", "power"])
         self.combo_epp.currentIndexChanged.connect(self._on_setting_modified)
-        grid.addWidget(lbl_epp, 5, 0)
-        grid.addWidget(self.combo_epp, 5, 1, Qt.AlignLeft)
+        grid_beh.addWidget(lbl_epp, 2, 0)
+        grid_beh.addWidget(self.combo_epp, 2, 1, Qt.AlignLeft)
 
-        layout.addWidget(card)
+        layout.addWidget(card_beh)
 
-        # Advanced Collapsible Section for BD PROCHOT
+        # ----------------------------------------------------
+        # 6. Advanced (BD PROCHOT, collapsed by default, red warning)
+        # ----------------------------------------------------
         self.advanced_sec = CollapsibleSection("Advanced Hardware Settings (BD PROCHOT)", is_expanded=False)
 
         adv_warn = QLabel("WARNING: BD PROCHOT (Bi-directional Processor Hot) protects VRMs from overheating.\n"
@@ -434,7 +513,7 @@ class MainWindow(QMainWindow):
         adv_warn.setWordWrap(True)
         self.advanced_sec.add_widget(adv_warn)
 
-        self.chk_bdprochot = QCheckBox("Disable BD PROCHOT (Emergency Throttling Override)")
+        self.chk_bdprochot = ToggleSwitch("Disable BD PROCHOT (Emergency Throttling Override)")
         self.chk_bdprochot.setChecked(True)
         self.chk_bdprochot.toggled.connect(self._on_bdprochot_toggled)
         self.advanced_sec.add_widget(self.chk_bdprochot)
@@ -903,7 +982,7 @@ class MainWindow(QMainWindow):
         lbl_auto = QLabel("Application Autostart:")
         lbl_auto.setProperty("class", "FormLabel")
         lbl_auto.setFixedWidth(LABEL_COL_WIDTH)
-        self.chk_autostart = QCheckBox("Start on System Login")
+        self.chk_autostart = ToggleSwitch("Start on System Login")
         self.chk_autostart.setChecked(self._is_autostart_enabled())
         self.chk_autostart.toggled.connect(self._toggle_autostart)
         grid.addWidget(lbl_auto, 1, 0)
