@@ -51,6 +51,7 @@ from ui.widgets import (
     StatCard,
     SliderSetting,
     FreqSliderSetting,
+    ThermalSliderSetting,
     ThreadIndicatorWidget,
     CollapsibleSection,
     SegmentedControl,
@@ -596,6 +597,25 @@ class MainWindow(QMainWindow):
         title_therm = QLabel("Thermal Target")
         title_therm.setProperty("class", "SectionTitle")
         grid_therm.addWidget(title_therm, 0, 0, 1, 3)
+
+        self.slider_thermal = ThermalSliderSetting("Throttle at", default_val=90, label_width=LABEL_COL_WIDTH)
+        self.slider_thermal.valueChanged.connect(self._on_setting_modified)
+        self.slider_thermal.add_to_grid(grid_therm, 1)
+
+        # Hardware TCC offset toggle (hidden if locked or missing MSR)
+        self.lbl_hw_tcc = QLabel("Hardware Control:")
+        self.lbl_hw_tcc.setProperty("class", "FormLabel")
+        self.lbl_hw_tcc.setFixedWidth(LABEL_COL_WIDTH)
+        self.chk_hardware_tcc = ToggleSwitch("Use hardware TCC offset (MSR 0x1A2)")
+        self.chk_hardware_tcc.setChecked(False)
+        self.chk_hardware_tcc.toggled.connect(self._on_setting_modified)
+        grid_therm.addWidget(self.lbl_hw_tcc, 2, 0)
+        grid_therm.addWidget(self.chk_hardware_tcc, 2, 1, 1, 2)
+
+        # Hidden by default until daemon confirms MSR 0x1A2 is writable
+        self.lbl_hw_tcc.setVisible(False)
+        self.chk_hardware_tcc.setVisible(False)
+
         layout.addWidget(self.card_therm)
 
         # ----------------------------------------------------
@@ -1264,7 +1284,7 @@ class MainWindow(QMainWindow):
             getattr(self, s, None) for s in [
                 "slider_pl1", "slider_pl2", "slider_gpu_min", "slider_gpu_max",
                 "slider_p_max", "slider_e_max", "slider_p_min", "slider_e_min",
-                "slider_p_threads", "slider_e_cores",
+                "slider_p_threads", "slider_e_cores", "slider_thermal",
             ]
         ]:
             if slider and hasattr(slider, "recolor_icon"):
@@ -1429,6 +1449,10 @@ class MainWindow(QMainWindow):
             self.slider_p_threads.set_value(prof.get("active_p_threads", len(det["p_cpus"])))
         if hasattr(self, "slider_e_cores"):
             self.slider_e_cores.set_value(prof.get("active_e_cores", len(det["e_cpus"])))
+        if hasattr(self, "slider_thermal"):
+            self.slider_thermal.set_value(prof.get("thermal_target_c", 90))
+        if hasattr(self, "chk_hardware_tcc"):
+            self.chk_hardware_tcc.setChecked(prof.get("use_hardware_tcc", False))
 
         self.profile_segmented.set_selected(key)
         self.profile_mgr.current_profile_key = key
@@ -1461,6 +1485,10 @@ class MainWindow(QMainWindow):
             settings["active_p_threads"] = self.slider_p_threads.get_value()
         if hasattr(self, "slider_e_cores"):
             settings["active_e_cores"] = self.slider_e_cores.get_value()
+        if hasattr(self, "slider_thermal"):
+            settings["thermal_target_c"] = self.slider_thermal.get_value()
+        if hasattr(self, "chk_hardware_tcc"):
+            settings["use_hardware_tcc"] = self.chk_hardware_tcc.isChecked()
         return settings
 
     def _recalculate_unsaved_changes(self):
@@ -1634,6 +1662,10 @@ class MainWindow(QMainWindow):
                     self.slider_gpu_min.set_range(int(lim.get("gpu_min_mhz", 100)), int(lim.get("gpu_max_mhz", 1250)))
                     self.slider_gpu_max.set_range(int(lim.get("gpu_min_mhz", 100)), int(lim.get("gpu_max_mhz", 1250)))
                     self._limits_loaded = True
+                    tcc_w = lim_resp.get("tcc_writable", False)
+                    if hasattr(self, "lbl_hw_tcc"):
+                        self.lbl_hw_tcc.setVisible(tcc_w)
+                        self.chk_hardware_tcc.setVisible(tcc_w)
         else:
             self.daemon_dot.setStyleSheet(f"color: {STATUS_CRITICAL}; font-size: 14px;")
             self.daemon_lbl.setText("Daemon Offline")
@@ -1742,6 +1774,19 @@ class MainWindow(QMainWindow):
         # Live thread indicator update
         if hasattr(self, "thread_indicator") and "online_cores" in data:
             self.thread_indicator.set_online_map(data["online_cores"])
+
+        # Live thermal target state update
+        if self.daemon_online and hasattr(self, "slider_thermal"):
+            st = self._send_to_daemon({"cmd": "get_status"})
+            if st.get("status") == "ok":
+                t_stat = st.get("thermal_status", {})
+                state = t_stat.get("state", "Holding")
+                eff_pl1 = t_stat.get("effective_pl1_w")
+                self.slider_thermal.update_state(state, eff_pl1)
+                tcc_w = t_stat.get("tcc_writable", False)
+                if hasattr(self, "lbl_hw_tcc") and self.lbl_hw_tcc.isVisible() != tcc_w:
+                    self.lbl_hw_tcc.setVisible(tcc_w)
+                    self.chk_hardware_tcc.setVisible(tcc_w)
 
         # Power source badge
         if data["ac_connected"]:

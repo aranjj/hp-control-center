@@ -306,6 +306,46 @@ class HardwareController:
             except OSError:
                 pass
 
+    def check_tcc_offset_writable(self) -> bool:
+        """Checks if MSR_TEMPERATURE_TARGET (0x1A2) is writable and unlocked."""
+        path = "/dev/cpu/0/msr"
+        if not os.path.exists(path):
+            return False
+        try:
+            self.unlock_msr()
+            fd = os.open(path, os.O_RDONLY)
+            os.lseek(fd, MSR_TEMPERATURE_TARGET, os.SEEK_SET)
+            raw = struct.unpack("<Q", os.read(fd, 8))[0]
+            os.close(fd)
+            # Bit 30 is TCC Offset Lock bit
+            is_locked = bool((raw >> 30) & 1)
+            return not is_locked
+        except Exception:
+            return False
+
+    def set_hardware_tcc_offset(self, target_c: int) -> bool:
+        """Sets MSR_TEMPERATURE_TARGET (0x1A2) TCC offset if unlocked."""
+        if not self.check_tcc_offset_writable():
+            return False
+        path = "/dev/cpu/0/msr"
+        try:
+            self.unlock_msr()
+            fd = os.open(path, os.O_RDWR)
+            os.lseek(fd, MSR_TEMPERATURE_TARGET, os.SEEK_SET)
+            raw = struct.unpack("<Q", os.read(fd, 8))[0]
+            tj_max = (raw >> 16) & 0xFF
+            if tj_max <= 0:
+                tj_max = 100
+            offset = max(0, min(63, tj_max - target_c))
+            # Clear bits 29:24 and set new offset
+            new_val = (raw & ~(0x3F << 24)) | ((offset & 0x3F) << 24)
+            os.lseek(fd, MSR_TEMPERATURE_TARGET, os.SEEK_SET)
+            os.write(fd, struct.pack("<Q", new_val))
+            os.close(fd)
+            return True
+        except Exception:
+            return False
+
 
 def get_core_topology_details() -> dict:
     """Discovers thread sibling pairs and online status for all CPUs."""

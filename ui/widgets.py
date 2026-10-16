@@ -611,6 +611,139 @@ class FreqSliderSetting(QObject):
             self.status_lbl.setText(reason)
 
 
+class ThermalSliderSetting(QObject):
+    """
+    Thermal Target Slider Setting:
+    - Range 69 to 100 (69 = Off, 70-100°C, default 90°C)
+    - Live state label: ("Holding", "Reducing PL1", "Recovering", "Off")
+    - Per-slider reset button (resets to 90°C)
+    """
+
+    valueChanged = Signal(int)  # 69 = Off, 70-100 = Target in °C
+
+    def __init__(self, label: str = "Throttle at", default_val: int = 90, label_width: int = 240, parent=None):
+        super().__init__(parent)
+        self.default_val = default_val
+        self._block_signals = False
+
+        # Col 0: Label
+        self.title_lbl = QLabel(label)
+        self.title_lbl.setProperty("class", "FormLabel")
+        self.title_lbl.setFixedWidth(label_width)
+
+        # Col 1: Slider box
+        self.slider_widget = QWidget()
+        slider_box = QVBoxLayout(self.slider_widget)
+        slider_box.setSpacing(2)
+        slider_box.setContentsMargins(0, 0, 0, 0)
+
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(69, 100)
+        self.slider.setValue(default_val)
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        slider_box.addWidget(self.slider)
+
+        range_row = QHBoxLayout()
+        range_row.setContentsMargins(0, 0, 0, 0)
+        self.min_lbl = QLabel("Off")
+        self.min_lbl.setProperty("class", "Footnote")
+        range_row.addWidget(self.min_lbl)
+
+        # Live thermal state label
+        self.status_lbl = QLabel("State: Holding  •  Target: 90°C")
+        self.status_lbl.setProperty("class", "Footnote")
+        self.status_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+        self.status_lbl.setAlignment(Qt.AlignCenter)
+        range_row.addWidget(self.status_lbl, alignment=Qt.AlignCenter)
+
+        self.max_lbl = QLabel("100°C")
+        self.max_lbl.setProperty("class", "Footnote")
+        range_row.addWidget(self.max_lbl, alignment=Qt.AlignRight)
+        slider_box.addLayout(range_row)
+
+        # Col 2: Trailing controls right-aligned (SpinBox + Reset)
+        self.trailing_widget = QWidget()
+        self.trailing_widget.setFixedWidth(124)
+        trailing = QHBoxLayout(self.trailing_widget)
+        trailing.setSpacing(6)
+        trailing.setContentsMargins(0, 0, 0, 0)
+
+        self.spin = QSpinBox()
+        self.spin.setRange(69, 100)
+        self.spin.setSpecialValueText("Off")
+        self.spin.setValue(default_val)
+        self.spin.setSuffix(" °C")
+        self.spin.setFixedWidth(84)
+        self.spin.setAlignment(Qt.AlignCenter)
+        self.spin.setProperty("class", "SettingSpin")
+        self.spin.valueChanged.connect(self._on_spin_changed)
+        trailing.addWidget(self.spin)
+
+        self.btn_reset = QToolButton()
+        self.btn_reset.setIcon(make_tinted_icon("view-refresh-symbolic", QColor("#ffffff"), 14))
+        self.btn_reset.setToolTip(f"Reset to default ({default_val}°C)")
+        self.btn_reset.setProperty("class", "SettingReset")
+        self.btn_reset.setCursor(Qt.PointingHandCursor)
+        self.btn_reset.clicked.connect(self.reset_to_default)
+        trailing.addWidget(self.btn_reset)
+
+    def add_to_grid(self, grid: QGridLayout, row: int):
+        grid.addWidget(self.title_lbl, row, 0, 1, 1, Qt.AlignVCenter)
+        grid.addWidget(self.slider_widget, row, 1, 1, 1)
+        grid.addWidget(self.trailing_widget, row, 2, 1, 1, Qt.AlignVCenter | Qt.AlignRight)
+
+    def recolor_icon(self, color: QColor):
+        self.btn_reset.setIcon(make_tinted_icon("view-refresh-symbolic", color, 14))
+
+    def _on_slider_changed(self, val: int):
+        if self._block_signals:
+            return
+        self._block_signals = True
+        self.spin.setValue(val)
+        self._update_status_lbl()
+        self._block_signals = False
+        self.valueChanged.emit(val)
+
+    def _on_spin_changed(self, val: int):
+        if self._block_signals:
+            return
+        self._block_signals = True
+        self.slider.setValue(val)
+        self._update_status_lbl()
+        self._block_signals = False
+        self.valueChanged.emit(val)
+
+    def update_state(self, state: str, effective_pl1: float = None):
+        self._last_state = state
+        self._last_pl1 = effective_pl1
+        self._update_status_lbl()
+
+    def _update_status_lbl(self):
+        val = self.get_value()
+        state = getattr(self, "_last_state", "Holding")
+        pl1 = getattr(self, "_last_pl1", None)
+        if val <= 69:
+            self.status_lbl.setText("State: Off (Thermal target disabled)")
+        else:
+            pl1_str = f"  •  PL1: {pl1:.0f}W" if pl1 else ""
+            self.status_lbl.setText(f"State: {state}  •  Target: {val}°C{pl1_str}")
+
+    def get_value(self) -> int:
+        return self.slider.value()
+
+    def set_value(self, val: int):
+        self._block_signals = True
+        clamped = max(69, min(100, val))
+        self.slider.setValue(clamped)
+        self.spin.setValue(clamped)
+        self._update_status_lbl()
+        self._block_signals = False
+
+    def reset_to_default(self):
+        self.set_value(self.default_val)
+        self.valueChanged.emit(self.default_val)
+
+
 class CollapsibleSection(QFrame):
     """Collapsible container with a toggle header."""
 

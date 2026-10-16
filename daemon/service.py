@@ -42,6 +42,11 @@ class DaemonService:
         self.running = True
         self.active_settings = dict(DEFAULT_PROFILES["balanced"])
         self.lock = threading.Lock()
+        self.tcc_writable = self.hw.check_tcc_offset_writable()
+        self.thermal_state = "Holding"
+        self.effective_pl1_w = None
+        self.hot_counter = 0
+        self.cool_counter = 0
 
     def clamp_and_validate_settings(self, settings: dict) -> dict:
         """Strictly clamps and sanitizes all incoming profile parameters."""
@@ -108,6 +113,11 @@ class DaemonService:
         if "active_e_cores" in settings:
             clamped["active_e_cores"] = int(settings["active_e_cores"])
 
+        # 10. Thermal Target
+        raw_target = int(settings.get("thermal_target_c", 90))
+        clamped["thermal_target_c"] = max(69, min(100, raw_target))
+        clamped["use_hardware_tcc"] = bool(settings.get("use_hardware_tcc", False)) and self.tcc_writable
+
         return clamped
 
     def apply_current_settings(self):
@@ -116,7 +126,8 @@ class DaemonService:
             s = self.active_settings
             try:
                 # 1. Package Power Limits (MSR + MMIO)
-                self.hw.set_package_power_limits(s["pl1_w"], s["pl2_w"], sync_mmio=s["sync_mmio"])
+                pl1 = self.effective_pl1_w if (self.effective_pl1_w is not None and self.thermal_state == "Reducing PL1") else s["pl1_w"]
+                self.hw.set_package_power_limits(pl1, max(pl1, s["pl2_w"]), sync_mmio=s["sync_mmio"])
 
                 # 2. BD PROCHOT
                 self.hw.set_bdprochot_disabled(s["disable_bdprochot"])
@@ -146,17 +157,97 @@ class DaemonService:
                         active_e_cores=s.get("active_e_cores"),
                     )
 
+                # 8. Hardware TCC offset (if enabled & writable)
+                if s.get("use_hardware_tcc") and self.tcc_writable:
+                    target_c = s.get("thermal_target_c", 90)
+                    if target_c > 69:
+                        self.hw.set_hardware_tcc_offset(target_c)
+
             except Exception as e:
                 print(f"[!] Error applying settings: {e}", file=sys.stderr)
 
-    def power_loop(self):
-        """Continuously re-asserts power limits every 5s on AC (25s on Battery)."""
-        while self.running:
-            is_ac = self.telemetry.is_ac_connected()
-            sleep_time = 5.0 if is_ac else 25.0
+    def _tick_thermal_target(self):
+        """1-second software thermal target loop:
+        - If temp >= target for 3 consecutive seconds: lower PL1 by 1W (floor 10W)
+        - If temp <= target - 5°C for 10 consecutive seconds: raise PL1 by 1W back to user requested value
+        - Log every adjustment and track state (Holding, Reducing PL1, Recovering, Off)
+        """
+        with self.lock:
+            s = self.active_settings
+            target = s.get("thermal_target_c", 90)
+            use_hw_tcc = s.get("use_hardware_tcc", False) and self.tcc_writable
 
-            self.apply_current_settings()
-            time.sleep(sleep_time)
+            if target is None or target <= 69:
+                self.thermal_state = "Off"
+                self.effective_pl1_w = float(s.get("pl1_w", 24.0))
+                self.hot_counter = 0
+                self.cool_counter = 0
+                return
+
+            if use_hw_tcc:
+                self.thermal_state = "Hardware TCC"
+                return
+
+            temp = self.telemetry.get_package_temp()
+            if temp is None:
+                return
+
+            requested_pl1 = float(s.get("pl1_w", 24.0))
+            if self.effective_pl1_w is None:
+                self.effective_pl1_w = requested_pl1
+
+            if temp >= target:
+                self.hot_counter += 1
+                self.cool_counter = 0
+                if self.hot_counter >= 3:
+                    if self.effective_pl1_w > 10.0:
+                        self.effective_pl1_w = max(10.0, self.effective_pl1_w - 1.0)
+                        self.thermal_state = "Reducing PL1"
+                        self.hw.set_package_power_limits(
+                            self.effective_pl1_w,
+                            max(self.effective_pl1_w, float(s.get("pl2_w", 28.0))),
+                            sync_mmio=s.get("sync_mmio", True),
+                        )
+                        print(f"[*] Thermal Target: Temp {temp}°C >= {target}°C for 3s. Lowered PL1 to {self.effective_pl1_w:.1f}W", file=sys.stderr)
+                    self.hot_counter = 0
+            elif temp <= (target - 5):
+                self.cool_counter += 1
+                self.hot_counter = 0
+                if self.cool_counter >= 10:
+                    if self.effective_pl1_w < requested_pl1:
+                        self.effective_pl1_w = min(requested_pl1, self.effective_pl1_w + 1.0)
+                        self.thermal_state = "Recovering"
+                        self.hw.set_package_power_limits(
+                            self.effective_pl1_w,
+                            max(self.effective_pl1_w, float(s.get("pl2_w", 28.0))),
+                            sync_mmio=s.get("sync_mmio", True),
+                        )
+                        print(f"[*] Thermal Target: Temp {temp}°C <= {target - 5}°C for 10s. Recovered PL1 to {self.effective_pl1_w:.1f}W", file=sys.stderr)
+                    else:
+                        self.thermal_state = "Holding"
+                    self.cool_counter = 0
+            else:
+                self.hot_counter = 0
+                self.cool_counter = 0
+                if self.effective_pl1_w < requested_pl1:
+                    self.thermal_state = "Recovering"
+                else:
+                    self.thermal_state = "Holding"
+
+    def power_loop(self):
+        """Continuously re-asserts power limits and manages 1Hz thermal loop."""
+        last_reassert = 0.0
+        while self.running:
+            now = time.time()
+            is_ac = self.telemetry.is_ac_connected()
+            reassert_interval = 5.0 if is_ac else 25.0
+
+            if now - last_reassert >= reassert_interval:
+                self.apply_current_settings()
+                last_reassert = now
+
+            self._tick_thermal_target()
+            time.sleep(1.0)
 
     def handle_client(self, conn):
         try:
@@ -183,6 +274,7 @@ class DaemonService:
                     "status": "ok",
                     "hardware_limits": HARDWARE_LIMITS,
                     "default_profiles": DEFAULT_PROFILES,
+                    "tcc_writable": self.tcc_writable,
                 }
             elif cmd == "get_status":
                 with self.lock:
@@ -190,6 +282,12 @@ class DaemonService:
                         "status": "ok",
                         "active_settings": self.active_settings,
                         "telemetry": self.telemetry.get_all(),
+                        "thermal_status": {
+                            "state": self.thermal_state,
+                            "effective_pl1_w": self.effective_pl1_w if self.effective_pl1_w is not None else self.active_settings.get("pl1_w", 24.0),
+                            "target_c": self.active_settings.get("thermal_target_c", 90),
+                            "tcc_writable": self.tcc_writable,
+                        },
                     }
             elif cmd == "reset_defaults":
                 self.hw.restore_all_cores()

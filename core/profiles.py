@@ -25,6 +25,8 @@ DEFAULT_PROFILES = {
         "cpu_governor": "powersave",
         "p_core_max_mhz": 4700,
         "e_core_max_mhz": 3500,
+        "thermal_target_c": 90,
+        "use_hardware_tcc": False,
     },
     "balanced": {
         "name": "Daily Balanced",
@@ -42,6 +44,8 @@ DEFAULT_PROFILES = {
         "cpu_governor": "powersave",
         "p_core_max_mhz": 4700,
         "e_core_max_mhz": 3500,
+        "thermal_target_c": 90,
+        "use_hardware_tcc": False,
     },
     "eco_quiet": {
         "name": "Silent & Eco",
@@ -59,6 +63,8 @@ DEFAULT_PROFILES = {
         "cpu_governor": "powersave",
         "p_core_max_mhz": 2400,
         "e_core_max_mhz": 2000,
+        "thermal_target_c": 85,
+        "use_hardware_tcc": False,
     },
 }
 
