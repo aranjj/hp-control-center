@@ -1,0 +1,206 @@
+"""
+Hardware Controller for Intel Alder Lake-U (Core i7-1255U) & HP 15
+Handles:
+- MSR Package Power Limits (0x610)
+- MMIO RAPL (MCHBAR + 0x59A0)
+- BD PROCHOT (0x1FC)
+- Intel Iris Xe GPU Clocks (Xe driver gt0/freq0)
+- CPU Turbo Boost & EPP Bias
+"""
+
+import os
+import glob
+import mmap
+import struct
+import subprocess
+
+# MSR Register Definitions
+MSR_TEMPERATURE_TARGET = 0x1A2
+MSR_POWER_CTL = 0x1FC
+MSR_PKG_POWER_LIMIT = 0x610
+MCHBAR_RAPL_OFFSET = 0x59A0
+MCHBAR_MASK = 0x00007FFFFFE0000  # Alder Lake Host Bridge 0x4601 mask
+
+# GPU Driver sysfs path for Intel Xe driver
+XE_GPU_PATH = "/sys/bus/pci/devices/0000:00:02.0/tile0/gt0/freq0"
+INTEL_TURBO_PATH = "/sys/devices/system/cpu/intel_pstate/no_turbo"
+
+
+class HardwareController:
+    def __init__(self):
+        self._mchbar_base = None
+
+    def unlock_msr(self):
+        """Allows user-space MSR writes in the Linux kernel."""
+        path = "/sys/module/msr/parameters/allow_writes"
+        if os.path.exists(path):
+            try:
+                with open(path, "w") as f:
+                    f.write("on\n")
+            except OSError:
+                pass
+
+    def get_mchbar_base(self):
+        """Reads Host Bridge (00:00.0) registers 0x48/0x4C to locate MCHBAR."""
+        if self._mchbar_base is not None:
+            return self._mchbar_base
+
+        try:
+            low = subprocess.check_output(
+                ["setpci", "-s", "0000:00:00.0", "48.l"], stderr=subprocess.DEVNULL
+            ).decode().strip()
+            high = subprocess.check_output(
+                ["setpci", "-s", "0000:00:00.0", "4c.l"], stderr=subprocess.DEVNULL
+            ).decode().strip()
+            raw = int(low, 16) | (int(high, 16) << 32)
+            if (raw & 1) == 0:  # Bit 0 is the enable bit
+                return None
+            self._mchbar_base = raw & MCHBAR_MASK
+            return self._mchbar_base
+        except Exception:
+            return None
+
+    def encode_power_limit(self, pl1_w: float, pl2_w: float, max_time_window: bool = True):
+        """Encodes PL1 and PL2 into Intel's 64-bit PKG_POWER_LIMIT bitfield."""
+        # Intel RAPL uses 1/8 Watt increments
+        pl1_raw = int(pl1_w * 8) & 0x7FFF
+        pl2_raw = int(pl2_w * 8) & 0x7FFF
+
+        # Max time window: Y=31, Z=3 gives ~10,234s (disables decay)
+        tw = (31 | (3 << 5)) if max_time_window else (10 | (0 << 5))
+
+        # Bits:
+        # [0:14]  PL1 Power Limit
+        # [15]     PL1 Enable
+        # [16]     PL1 Clamping Limit
+        # [17:23] PL1 Time Window
+        # [32:46] PL2 Power Limit
+        # [47]     PL2 Enable
+        # [48]     PL2 Clamping Limit
+        # [49:55] PL2 Time Window
+        low_32 = pl1_raw | (1 << 15) | (1 << 16) | (tw << 17)
+        high_32 = pl2_raw | (1 << 15) | (1 << 16) | (tw << 17)
+        return low_32 | (high_32 << 32)
+
+    def write_msr(self, reg: int, val_64: int):
+        """Writes a 64-bit value to an MSR register on CPU 0."""
+        self.unlock_msr()
+        path = "/dev/cpu/0/msr"
+        if not os.path.exists(path):
+            subprocess.run(["modprobe", "msr"], check=False)
+
+        fd = os.open(path, os.O_WRONLY)
+        try:
+            os.lseek(fd, reg, os.SEEK_SET)
+            os.write(fd, struct.pack("<Q", val_64))
+        finally:
+            os.close(fd)
+
+    def write_mmio(self, val_64: int):
+        """Writes the power limit directly into MCHBAR MMIO physical RAM."""
+        base = self.get_mchbar_base()
+        if not base:
+            return False
+
+        target_addr = base + MCHBAR_RAPL_OFFSET
+        pagesize = os.sysconf(os.sysconf_names["SC_PAGESIZE"])
+        aligned_addr = target_addr - (target_addr % pagesize)
+        offset_in_page = target_addr - aligned_addr
+
+        fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
+        try:
+            mem = mmap.mmap(fd, pagesize, offset=aligned_addr)
+            mem[offset_in_page : offset_in_page + 8] = struct.pack("<Q", val_64)
+            mem.close()
+            return True
+        finally:
+            os.close(fd)
+
+    def set_package_power_limits(self, pl1_w: float, pl2_w: float, sync_mmio: bool = True):
+        """Sets both MSR and MMIO package power limits."""
+        val = self.encode_power_limit(pl1_w, pl2_w)
+        self.write_msr(MSR_PKG_POWER_LIMIT, val)
+        if sync_mmio:
+            self.write_mmio(val)
+
+    def set_bdprochot_disabled(self, disable: bool = True):
+        """Clears bit 0 in MSR 0x1FC (POWER_CTL) to disable BD PROCHOT."""
+        self.unlock_msr()
+        path = "/dev/cpu/0/msr"
+        if not os.path.exists(path):
+            return
+
+        fd = os.open(path, os.O_RDWR)
+        try:
+            os.lseek(fd, MSR_POWER_CTL, os.SEEK_SET)
+            val = struct.unpack("<Q", os.read(fd, 8))[0]
+            if disable:
+                # Clear bit 0 (BDPROCHOT disable)
+                new_val = val & ~1
+            else:
+                new_val = val | 1
+            os.lseek(fd, MSR_POWER_CTL, os.SEEK_SET)
+            os.write(fd, struct.pack("<Q", new_val))
+        finally:
+            os.close(fd)
+
+    def set_gpu_clocks(self, min_mhz: int, max_mhz: int, power_mode: str = "base"):
+        """Sets Intel Iris Xe GPU minimum and maximum frequencies."""
+        if not os.path.exists(XE_GPU_PATH):
+            return False
+
+        min_file = os.path.join(XE_GPU_PATH, "min_freq")
+        max_file = os.path.join(XE_GPU_PATH, "max_freq")
+        profile_file = os.path.join(XE_GPU_PATH, "power_profile")
+
+        try:
+            # Set max first if expanding, or min first if lowering
+            if os.path.exists(max_file):
+                with open(max_file, "w") as f:
+                    f.write(f"{int(max_mhz)}\n")
+            if os.path.exists(min_file):
+                with open(min_file, "w") as f:
+                    f.write(f"{int(min_mhz)}\n")
+            if os.path.exists(profile_file) and power_mode in ("base", "power_saving"):
+                with open(profile_file, "w") as f:
+                    f.write(f"{power_mode}\n")
+            return True
+        except OSError:
+            return False
+
+    def set_cpu_turbo(self, enable: bool):
+        """Enables (0) or disables (1) Intel CPU Turbo Boost."""
+        if os.path.exists(INTEL_TURBO_PATH):
+            try:
+                with open(INTEL_TURBO_PATH, "w") as f:
+                    f.write("0\n" if enable else "1\n")
+                return True
+            except OSError:
+                return False
+        return False
+
+    def set_cpu_epp(self, epp_mode: str):
+        """Sets Energy Performance Preference (EPP) across all online CPU cores."""
+        valid_modes = {"performance", "balance_performance", "balance_power", "power", "default"}
+        if epp_mode not in valid_modes:
+            return False
+
+        success = True
+        for path in glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference"):
+            try:
+                with open(path, "w") as f:
+                    f.write(f"{epp_mode}\n")
+            except OSError:
+                success = False
+        return success
+
+    def set_cpu_governor(self, governor: str):
+        """Sets scaling governor (e.g., performance or powersave)."""
+        success = True
+        for path in glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor"):
+            try:
+                with open(path, "w") as f:
+                    f.write(f"{governor}\n")
+            except OSError:
+                success = False
+        return success

@@ -1,0 +1,13 @@
+[Unit]
+Description=HP Control Center Hardware Daemon
+After=multi-user.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/aran/Projects/Github/hp-control-center/daemon/service.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
