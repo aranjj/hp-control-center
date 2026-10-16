@@ -18,7 +18,7 @@ import argparse
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from core.telemetry import TelemetryReader
-from core.profiles import DEFAULT_PROFILES
+from core.profiles import DEFAULT_PROFILES, ProfileManager
 from core.sysinfo import get_cpu_display_names, get_gpu_display_names
 
 SOCKET_PATH = "/tmp/hp_control_center.sock"
@@ -79,8 +79,12 @@ def apply_profile(name):
     print(f"[+] Applying profile: {p['name']} ({p['icon']})")
     print(f"    PL1: {p['pl1_w']}W | PL2: {p['pl2_w']}W | GPU Min: {p['gpu_min_mhz']}MHz | Turbo: {p['turbo_boost']}")
 
-    resp = send_daemon_cmd({"cmd": "apply", "settings": p})
+    resp = send_daemon_cmd({"cmd": "apply", "settings": p, "profile": key})
     if resp.get("status") == "ok":
+        try:
+            ProfileManager().set_active_profile(key)
+        except Exception:
+            pass
         print("[+] Success!")
     else:
         print(f"[!] Error: {resp.get('message')}")

@@ -21,6 +21,9 @@ from core.telemetry import TelemetryReader
 from core.profiles import DEFAULT_PROFILES
 
 SOCKET_PATH = "/tmp/hp_control_center.sock"
+DAEMON_STATE_DIR = "/var/lib/hp-control-center"
+DAEMON_STATE_FILE = os.path.join(DAEMON_STATE_DIR, "state.json")
+DAEMON_FALLBACK_STATE_FILE = os.path.expanduser("~/.config/hp-control-center/daemon_state.json")
 
 # Hardware Safety Constraints
 _gpu_min, _gpu_max = get_gpu_hardware_limits()
@@ -45,13 +48,49 @@ class DaemonService:
 
         self.telemetry = TelemetryReader()
         self.running = True
-        self.active_settings = dict(DEFAULT_PROFILES["balanced"])
+        self.active_profile, self.active_settings = self._load_saved_state()
         self.lock = threading.Lock()
         self.tcc_writable = self.hw.check_tcc_offset_writable()
         self.thermal_state = "Holding"
         self.effective_pl1_w = None
         self.hot_counter = 0
         self.cool_counter = 0
+
+    def _get_state_file(self) -> str:
+        if os.geteuid() == 0:
+            return DAEMON_STATE_FILE
+        return DAEMON_FALLBACK_STATE_FILE
+
+    def _load_saved_state(self):
+        for path in (DAEMON_STATE_FILE, DAEMON_FALLBACK_STATE_FILE):
+            if os.path.exists(path):
+                try:
+                    with open(path, "r") as f:
+                        data = json.load(f)
+                    saved_settings = data.get("active_settings", {})
+                    profile_key = data.get("active_profile", "balanced")
+                    if saved_settings:
+                        validated = self.clamp_and_validate_settings(saved_settings)
+                        return profile_key, validated
+                except Exception as e:
+                    print(f"[!] Warning: Failed to load daemon state from {path}: {e}", file=sys.stderr)
+        return "balanced", dict(DEFAULT_PROFILES["balanced"])
+
+    def _save_state(self):
+        target = self._get_state_file()
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "w") as f:
+                json.dump(
+                    {
+                        "active_profile": self.active_profile,
+                        "active_settings": self.active_settings,
+                    },
+                    f,
+                    indent=2,
+                )
+        except Exception as e:
+            print(f"[!] Warning: Failed to save daemon state to {target}: {e}", file=sys.stderr)
 
     def clamp_and_validate_settings(self, settings: dict) -> dict:
         """Strictly clamps and sanitizes all incoming profile parameters."""
@@ -292,14 +331,19 @@ class DaemonService:
 
             if cmd == "apply":
                 raw_settings = msg.get("settings", {})
+                profile_key = msg.get("profile")
                 validated = self.clamp_and_validate_settings(raw_settings)
                 with self.lock:
+                    if profile_key:
+                        self.active_profile = profile_key
                     self.active_settings.update(validated)
+                    self._save_state()
                 self.apply_current_settings()
                 resp = {
                     "status": "ok",
                     "message": "Settings clamped, validated, and applied successfully.",
                     "applied_settings": self.active_settings,
+                    "active_profile": self.active_profile,
                 }
             elif cmd == "get_limits":
                 resp = {
@@ -312,6 +356,7 @@ class DaemonService:
                 with self.lock:
                     resp = {
                         "status": "ok",
+                        "active_profile": self.active_profile,
                         "active_settings": self.active_settings,
                         "telemetry": self.telemetry.get_all(),
                         "thermal_status": {
@@ -324,7 +369,9 @@ class DaemonService:
             elif cmd == "reset_defaults":
                 self.hw.restore_all_cores()
                 with self.lock:
+                    self.active_profile = "balanced"
                     self.active_settings = dict(DEFAULT_PROFILES["balanced"])
+                    self._save_state()
                 self.apply_current_settings()
                 resp = {"status": "ok", "message": "Defaults restored and all cores brought online."}
             elif cmd == "ping":
@@ -353,6 +400,9 @@ class DaemonService:
         # Set permissions so any local user can communicate with the daemon
         os.chmod(SOCKET_PATH, 0o666)
         server.listen(5)
+
+        # Apply saved/initial profile settings directly to hardware on service startup
+        self.apply_current_settings()
 
         # Start background hardware enforcement loop
         thread = threading.Thread(target=self.power_loop, daemon=True)

@@ -25,6 +25,7 @@ package() {
 
     # 1. Install core application files into /usr/lib/hp-control-center
     install -dm755 "${pkgdir}/usr/lib/${pkgname}"
+    install -dm755 "${pkgdir}/var/lib/${pkgname}"
     cp -a "${_src}/core" "${pkgdir}/usr/lib/${pkgname}/"
     cp -a "${_src}/ui" "${pkgdir}/usr/lib/${pkgname}/"
     cp -a "${_src}/daemon" "${pkgdir}/usr/lib/${pkgname}/"

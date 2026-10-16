@@ -117,6 +117,10 @@ class MainWindow(QMainWindow):
 
         # Initial check & load
         self._check_daemon_status()
+        if self.daemon_online and getattr(self, "_daemon_active_profile", None):
+            daemon_prof = self._daemon_active_profile
+            if daemon_prof in self.profile_mgr.profiles or daemon_prof == "custom":
+                self.profile_mgr.current_profile_key = daemon_prof
         self._load_profile_into_ui(self.profile_mgr.current_profile_key)
         self._applied_settings = self._collect_ui_settings()
         self._recalculate_unsaved_changes()
@@ -144,8 +148,9 @@ class MainWindow(QMainWindow):
             wh.requestActivate()
 
     def closeEvent(self, event):
-        """Remember window size/position on close."""
+        """Remember window size/position and profile configuration on close."""
         self.settings.setValue("geometry", self.saveGeometry())
+        self.profile_mgr.save_config()
         super().closeEvent(event)
 
     def resizeEvent(self, event):
@@ -1579,6 +1584,7 @@ class MainWindow(QMainWindow):
         if key == "custom":
             return
         self._load_profile_into_ui(key)
+        self.profile_mgr.set_active_profile(key)
 
     def _load_profile_into_ui(self, key: str):
         prof = self.profile_mgr.get_profile(key)
@@ -1689,13 +1695,15 @@ class MainWindow(QMainWindow):
     def _reset_to_defaults(self):
         """Resets current profile and sliders to Daily Balanced baseline."""
         self._load_profile_into_ui("balanced")
+        self.profile_mgr.set_active_profile("balanced")
 
     def _apply_settings(self):
         """Sends staged hardware changes to daemon with a 15-second auto-revert countdown."""
         previous_settings = dict(self._applied_settings)
         settings = self._collect_ui_settings()
+        current_key = self.profile_mgr.current_profile_key
 
-        resp = self._send_to_daemon({"cmd": "apply", "settings": settings})
+        resp = self._send_to_daemon({"cmd": "apply", "settings": settings, "profile": current_key})
         if resp.get("status") == "ok":
             self.log_text.append("[*] Applied limits to hardware. Awaiting confirmation...")
             dlg = RevertCountdownDialog(
@@ -1708,11 +1716,15 @@ class MainWindow(QMainWindow):
 
             if dlg.confirmed:
                 self._applied_settings = dict(settings)
+                if current_key == "custom":
+                    self.profile_mgr.update_custom_profile(settings)
+                else:
+                    self.profile_mgr.set_active_profile(current_key)
                 self._recalculate_unsaved_changes()
                 self.log_text.append("[+] Hardware settings confirmed by user.")
             else:
                 self.log_text.append("[!] Confirmation timed out or reverted. Restoring previous hardware limits...")
-                self._send_to_daemon({"cmd": "apply", "settings": previous_settings})
+                self._send_to_daemon({"cmd": "apply", "settings": previous_settings, "profile": current_key})
                 self._applied_settings = dict(previous_settings)
                 self._load_profile_into_ui(self.profile_mgr.current_profile_key)
                 self.log_text.append("[OK] Restored previous safe settings.")
@@ -1843,6 +1855,9 @@ class MainWindow(QMainWindow):
                     if hasattr(self, "lbl_hw_tcc"):
                         self.lbl_hw_tcc.setVisible(tcc_w)
                         self.chk_hardware_tcc.setVisible(tcc_w)
+                stat_resp = self._send_to_daemon({"cmd": "get_status"})
+                if stat_resp.get("status") == "ok":
+                    self._daemon_active_profile = stat_resp.get("active_profile")
         else:
             self.daemon_dot.setStyleSheet(f"color: {STATUS_CRITICAL}; font-size: 14px;")
             self.daemon_lbl.setText("Daemon Offline")
@@ -2010,13 +2025,13 @@ class MainWindow(QMainWindow):
         text_color = pal.windowText().color()
 
         act_gaming = tray_menu.addAction(make_tinted_icon("speedometer-symbolic", text_color, 16), "Ultra Gaming (25W)")
-        act_gaming.triggered.connect(lambda: self._on_profile_selected("ultra_gaming"))
+        act_gaming.triggered.connect(lambda: self._on_tray_profile_selected("ultra_gaming"))
 
         act_balanced = tray_menu.addAction(make_tinted_icon("preferences-system-performance-symbolic", text_color, 16), "Daily Balanced (24W)")
-        act_balanced.triggered.connect(lambda: self._on_profile_selected("balanced"))
+        act_balanced.triggered.connect(lambda: self._on_tray_profile_selected("balanced"))
 
         act_eco = tray_menu.addAction(make_tinted_icon("battery-profile-performance-symbolic", text_color, 16), "Silent & Eco (15W)")
-        act_eco.triggered.connect(lambda: self._on_profile_selected("eco_quiet"))
+        act_eco.triggered.connect(lambda: self._on_tray_profile_selected("eco_quiet"))
 
         tray_menu.addSeparator()
         act_show = tray_menu.addAction(make_tinted_icon("utilities-system-monitor-symbolic", text_color, 16), "Open Control Center")
@@ -2035,6 +2050,20 @@ class MainWindow(QMainWindow):
                 self.hide()
             else:
                 self.showNormal()
+
+    def _on_tray_profile_selected(self, key: str):
+        self._load_profile_into_ui(key)
+        settings = self._collect_ui_settings()
+        resp = self._send_to_daemon({"cmd": "apply", "settings": settings, "profile": key})
+        if resp.get("status") == "ok":
+            self._applied_settings = dict(settings)
+            self.profile_mgr.set_active_profile(key)
+            self._recalculate_unsaved_changes()
+            prof_name = self.profile_mgr.get_profile(key).get("name", key)
+            self.log_text.append(f"[+] Activated profile '{prof_name}' from system tray.")
+        else:
+            self.profile_mgr.set_active_profile(key)
+            self._recalculate_unsaved_changes()
 
     # ==============================================
     # AUTOSTART HELPER

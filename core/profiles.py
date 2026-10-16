@@ -93,7 +93,7 @@ class ProfileManager:
         return prof
 
     def set_active_profile(self, key: str):
-        if key in self.profiles:
+        if key in self.profiles or key == "custom":
             self.current_profile_key = key
             self.save_config()
 
