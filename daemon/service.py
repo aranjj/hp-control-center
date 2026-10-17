@@ -19,6 +19,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from core.hardware import HardwareController, get_cpu_topology_info, get_gpu_hardware_limits
 from core.telemetry import TelemetryReader
 from core.profiles import DEFAULT_PROFILES
+from core.powerprofiles import (
+    is_ppd_available,
+    get_ppd_profile,
+    set_ppd_profile,
+    map_app_to_ppd,
+    map_ppd_to_app,
+)
 
 SOCKET_PATH = "/tmp/hp_control_center.sock"
 DAEMON_STATE_DIR = "/var/lib/hp-control-center"
@@ -48,7 +55,8 @@ class DaemonService:
 
         self.telemetry = TelemetryReader()
         self.running = True
-        self.active_profile, self.active_settings = self._load_saved_state()
+        self.active_profile, self.active_settings, self.sync_ppd = self._load_saved_state()
+        self.last_ppd_profile = get_ppd_profile() if is_ppd_available() else None
         self.lock = threading.Lock()
         self.tcc_writable = self.hw.check_tcc_offset_writable()
         self.thermal_state = "Holding"
@@ -62,19 +70,22 @@ class DaemonService:
         return DAEMON_FALLBACK_STATE_FILE
 
     def _load_saved_state(self):
-        for path in (DAEMON_STATE_FILE, DAEMON_FALLBACK_STATE_FILE):
+        primary = self._get_state_file()
+        fallback = DAEMON_FALLBACK_STATE_FILE if primary == DAEMON_STATE_FILE else DAEMON_STATE_FILE
+        for path in (primary, fallback):
             if os.path.exists(path):
                 try:
                     with open(path, "r") as f:
                         data = json.load(f)
                     saved_settings = data.get("active_settings", {})
                     profile_key = data.get("active_profile", "balanced")
+                    sync_ppd = bool(data.get("sync_ppd", True))
                     if saved_settings:
                         validated = self.clamp_and_validate_settings(saved_settings)
-                        return profile_key, validated
+                        return profile_key, validated, sync_ppd
                 except Exception as e:
                     print(f"[!] Warning: Failed to load daemon state from {path}: {e}", file=sys.stderr)
-        return "balanced", dict(DEFAULT_PROFILES["balanced"])
+        return "balanced", dict(DEFAULT_PROFILES["balanced"]), True
 
     def _save_state(self):
         target = self._get_state_file()
@@ -85,6 +96,7 @@ class DaemonService:
                     {
                         "active_profile": self.active_profile,
                         "active_settings": self.active_settings,
+                        "sync_ppd": self.sync_ppd,
                     },
                     f,
                     indent=2,
@@ -299,8 +311,10 @@ class DaemonService:
             self.hw.set_package_power_limits(pl1, pl2, sync_mmio=sync_mmio)
 
     def power_loop(self):
-        """Periodically re-asserts power limits at the configured interval and manages 1Hz thermal loop."""
+        """Periodically re-asserts power limits at the configured interval, manages 1Hz thermal loop,
+        and synchronizes with system powerprofilesctl."""
         last_reassert = time.time()
+        last_ppd_check = 0.0
         last_ac = None
         while self.running:
             now = time.time()
@@ -318,6 +332,22 @@ class DaemonService:
                 last_reassert = now
 
             self._tick_thermal_target()
+
+            # Inbound synchronization from powerprofilesctl (checked every 2 seconds)
+            if self.sync_ppd and is_ppd_available() and (now - last_ppd_check >= 2.0):
+                last_ppd_check = now
+                current_ppd = get_ppd_profile()
+                if current_ppd and current_ppd != self.last_ppd_profile:
+                    self.last_ppd_profile = current_ppd
+                    mapped_key = map_ppd_to_app(current_ppd)
+                    if mapped_key and mapped_key != self.active_profile and mapped_key in DEFAULT_PROFILES:
+                        print(f"[*] Inbound sync: powerprofilesctl changed to '{current_ppd}'. Activating preset '{mapped_key}'.", file=sys.stderr)
+                        with self.lock:
+                            self.active_profile = mapped_key
+                            self.active_settings = dict(DEFAULT_PROFILES[mapped_key])
+                            self._save_state()
+                        self.apply_current_settings()
+
             time.sleep(1.0)
 
     def handle_client(self, conn):
@@ -339,11 +369,17 @@ class DaemonService:
                     self.active_settings.update(validated)
                     self._save_state()
                 self.apply_current_settings()
+                if self.sync_ppd and is_ppd_available() and self.active_profile:
+                    target_ppd = map_app_to_ppd(self.active_profile, self.active_settings.get("cpu_epp"))
+                    if target_ppd:
+                        set_ppd_profile(target_ppd)
+                        self.last_ppd_profile = target_ppd
                 resp = {
                     "status": "ok",
                     "message": "Settings clamped, validated, and applied successfully.",
                     "applied_settings": self.active_settings,
                     "active_profile": self.active_profile,
+                    "sync_ppd": self.sync_ppd,
                 }
             elif cmd == "get_limits":
                 resp = {
@@ -351,6 +387,8 @@ class DaemonService:
                     "hardware_limits": HARDWARE_LIMITS,
                     "default_profiles": DEFAULT_PROFILES,
                     "tcc_writable": self.tcc_writable,
+                    "sync_ppd": self.sync_ppd,
+                    "ppd_available": is_ppd_available(),
                 }
             elif cmd == "get_status":
                 with self.lock:
@@ -358,6 +396,9 @@ class DaemonService:
                         "status": "ok",
                         "active_profile": self.active_profile,
                         "active_settings": self.active_settings,
+                        "sync_ppd": self.sync_ppd,
+                        "ppd_available": is_ppd_available(),
+                        "current_ppd": self.last_ppd_profile,
                         "telemetry": self.telemetry.get_all(),
                         "thermal_status": {
                             "state": self.thermal_state,
@@ -373,7 +414,21 @@ class DaemonService:
                     self.active_settings = dict(DEFAULT_PROFILES["balanced"])
                     self._save_state()
                 self.apply_current_settings()
+                if self.sync_ppd and is_ppd_available():
+                    set_ppd_profile("balanced")
+                    self.last_ppd_profile = "balanced"
                 resp = {"status": "ok", "message": "Defaults restored and all cores brought online."}
+            elif cmd == "set_ppd_sync":
+                enabled = bool(msg.get("enabled", True))
+                with self.lock:
+                    self.sync_ppd = enabled
+                    self._save_state()
+                if self.sync_ppd and is_ppd_available():
+                    target_ppd = map_app_to_ppd(self.active_profile, self.active_settings.get("cpu_epp"))
+                    if target_ppd:
+                        set_ppd_profile(target_ppd)
+                        self.last_ppd_profile = target_ppd
+                resp = {"status": "ok", "sync_ppd": self.sync_ppd}
             elif cmd == "ping":
                 resp = {"status": "ok", "daemon_running": True}
             else:
@@ -403,6 +458,11 @@ class DaemonService:
 
         # Apply saved/initial profile settings directly to hardware on service startup
         self.apply_current_settings()
+        if self.sync_ppd and is_ppd_available() and self.active_profile:
+            target_ppd = map_app_to_ppd(self.active_profile, self.active_settings.get("cpu_epp"))
+            if target_ppd:
+                set_ppd_profile(target_ppd)
+                self.last_ppd_profile = target_ppd
 
         # Start background hardware enforcement loop
         thread = threading.Thread(target=self.power_loop, daemon=True)

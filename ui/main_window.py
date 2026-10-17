@@ -38,6 +38,7 @@ from PySide6.QtGui import QIcon, QColor
 from core.telemetry import TelemetryReader
 from core.profiles import ProfileManager
 from core.display import DisplayManager
+from core.powerprofiles import is_ppd_available, get_ppd_profile
 from core.sysinfo import SystemInfoReader, get_cpu_display_names, get_gpu_display_names
 from core.hardware import get_cpu_topology_info, get_core_topology_details, get_gpu_hardware_limits
 from ui.styles import (
@@ -1316,6 +1317,22 @@ class MainWindow(QMainWindow):
         grid.addWidget(lbl_th, 2, 0)
         grid.addWidget(self.combo_theme, 2, 1, Qt.AlignLeft)
 
+        # System Power Profile Sync (powerprofilesctl) in two-column grid
+        lbl_ppd = QLabel("System Profiles:")
+        lbl_ppd.setProperty("class", "FormLabel")
+        lbl_ppd.setFixedWidth(LABEL_COL_WIDTH)
+        self.chk_ppd_sync = ToggleSwitch("Sync with KDE / GNOME (powerprofilesctl)")
+        ppd_avail = is_ppd_available()
+        self.chk_ppd_sync.setChecked(ppd_avail and self.settings.value("sync_ppd", True, type=bool))
+        self.chk_ppd_sync.setEnabled(ppd_avail)
+        if not ppd_avail:
+            self.chk_ppd_sync.setToolTip("powerprofilesctl not found on system.")
+        else:
+            self.chk_ppd_sync.setToolTip("Bidirectionally synchronizes presets with KDE Plasma / GNOME power slider.")
+        self.chk_ppd_sync.toggled.connect(self._on_ppd_sync_toggled)
+        grid.addWidget(lbl_ppd, 3, 0)
+        grid.addWidget(self.chk_ppd_sync, 3, 1, 1, 2)
+
         # Daemon Status & Instructions Card
         d_card = QFrame()
         d_card.setProperty("class", "CardFrame")
@@ -1391,6 +1408,15 @@ class MainWindow(QMainWindow):
         if theme_name in THEMES:
             self.settings.setValue("theme", theme_name)
             self._apply_theme(theme_name)
+
+    def _on_ppd_sync_toggled(self, checked: bool):
+        self.settings.setValue("sync_ppd", checked)
+        if self.daemon_online:
+            self._send_to_daemon({"cmd": "set_ppd_sync", "enabled": checked})
+            if checked:
+                self.log_text.append("[Settings] Enabled synchronization with powerprofilesctl (KDE / GNOME).")
+            else:
+                self.log_text.append("[Settings] Disabled synchronization with powerprofilesctl.")
 
     def _apply_theme(self, theme_name: str = None):
         if theme_name:
@@ -1979,6 +2005,16 @@ class MainWindow(QMainWindow):
                 if hasattr(self, "lbl_hw_tcc") and self.lbl_hw_tcc.isVisible() != tcc_w:
                     self.lbl_hw_tcc.setVisible(tcc_w)
                     self.chk_hardware_tcc.setVisible(tcc_w)
+
+                # Check if system powerprofilesctl or external trigger changed active profile
+                daemon_prof = st.get("active_profile")
+                if daemon_prof and daemon_prof != self.profile_mgr.current_profile_key and self.unsaved_changes_count == 0:
+                    self._load_profile_into_ui(daemon_prof)
+                    self._applied_settings = self._collect_ui_settings()
+                    self.profile_mgr.set_active_profile(daemon_prof)
+                    self._recalculate_unsaved_changes()
+                    prof_name = self.profile_mgr.get_profile(daemon_prof).get("name", daemon_prof)
+                    self.log_text.append(f"[System] Synced profile '{prof_name}' from system powerprofilesctl.")
 
         # Power source badge
         if data["ac_connected"]:

@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from core.telemetry import TelemetryReader
 from core.profiles import DEFAULT_PROFILES, ProfileManager
 from core.sysinfo import get_cpu_display_names, get_gpu_display_names
+from core.powerprofiles import is_ppd_available, get_ppd_profile, set_ppd_profile, map_app_to_ppd
 
 SOCKET_PATH = "/tmp/hp_control_center.sock"
 
@@ -55,6 +56,9 @@ def show_status():
     print(f" GPU Throttling:     {data['gpu']['throttle_reasons'].upper()}")
     print(f" CPU Clocks:         P-Cores: {data['cpu_freq']['p_core_mhz']} MHz | E-Cores: {data['cpu_freq']['e_core_mhz']} MHz")
     print(f" Power Source:       {'AC Connected' if data['ac_connected'] else 'On Battery'}")
+    if is_ppd_available():
+        ppd_mode = get_ppd_profile()
+        print(f" System Profile:     {ppd_mode} (powerprofilesctl)")
     print(f" Daemon Active:      {'Yes' if os.path.exists(SOCKET_PATH) else 'No (Offline)'}")
     print("=" * 55)
 
@@ -85,6 +89,11 @@ def apply_profile(name):
             ProfileManager().set_active_profile(key)
         except Exception:
             pass
+        if is_ppd_available():
+            ppd_mode = map_app_to_ppd(key)
+            if ppd_mode:
+                set_ppd_profile(ppd_mode)
+                print(f"[+] System power profile synced: {ppd_mode} (KDE / GNOME)")
         print("[+] Success!")
     else:
         print(f"[!] Error: {resp.get('message')}")
