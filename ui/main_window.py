@@ -715,17 +715,12 @@ class MainWindow(QMainWindow):
             self.slider_e_cores.title_lbl.setToolTip(reason)
             self.slider_e_cores.slider.setToolTip(reason)
 
-        # Live thread indicator row
-        lbl_threads = QLabel("Active Thread Topology:")
-        lbl_threads.setProperty("class", "FormLabel")
-        lbl_threads.setFixedWidth(LABEL_COL_WIDTH)
-        grid_core.addWidget(lbl_threads, 3, 0, Qt.AlignVCenter)
-
+        # Live thread indicator row spanning full width
         self.thread_indicator = ThreadIndicatorWidget(
             p_threads=core_det["p_cpus"],
             e_threads=core_det["e_cpus"],
         )
-        grid_core.addWidget(self.thread_indicator, 3, 1, 1, 2)
+        grid_core.addWidget(self.thread_indicator, 3, 0, 1, 3)
 
         # ----------------------------------------------------
         # 4. Thermal Target (Step 4)
@@ -1299,7 +1294,7 @@ class MainWindow(QMainWindow):
         lbl_auto = QLabel("Application Autostart:")
         lbl_auto.setProperty("class", "FormLabel")
         lbl_auto.setFixedWidth(LABEL_COL_WIDTH)
-        self.chk_autostart = ToggleSwitch("Start on System Login")
+        self.chk_autostart = ToggleSwitch("Start on System Login (in System Tray)")
         self.chk_autostart.setChecked(self._is_autostart_enabled())
         self.chk_autostart.toggled.connect(self._toggle_autostart)
         grid.addWidget(lbl_auto, 1, 0)
@@ -2112,16 +2107,27 @@ class MainWindow(QMainWindow):
     def _toggle_autostart(self, enabled: bool):
         autostart_dir = os.path.expanduser("~/.config/autostart")
         autostart_path = os.path.join(autostart_dir, "hp-control-center.desktop")
-        app_desktop = os.path.expanduser("~/.local/share/applications/hp-control-center.desktop")
 
         if enabled:
             os.makedirs(autostart_dir, exist_ok=True)
-            if os.path.exists(app_desktop):
-                try:
-                    with open(app_desktop, "r") as src, open(autostart_path, "w") as dst:
-                        dst.write(src.read())
-                except OSError:
-                    pass
+            content = (
+                "[Desktop Entry]\n"
+                "Type=Application\n"
+                "Name=HP Performance Center\n"
+                "Comment=Gaming & Power Tuning for HP Intel Laptops (Background Tray)\n"
+                "Exec=hp-control-center --tray\n"
+                "Icon=hp-control-center\n"
+                "Terminal=false\n"
+                "Categories=System;Settings;HardwareSettings;\n"
+                "StartupNotify=false\n"
+                "X-GNOME-Autostart-enabled=true\n"
+                "X-KDE-autostart-after=panel\n"
+            )
+            try:
+                with open(autostart_path, "w") as dst:
+                    dst.write(content)
+            except OSError:
+                pass
         else:
             if os.path.exists(autostart_path):
                 try:

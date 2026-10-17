@@ -57,10 +57,13 @@ def main():
     if not icon.isNull():
         app.setWindowIcon(icon)
 
+    start_in_tray = any(arg in sys.argv for arg in ("--tray", "--minimized", "-m"))
+
     window = MainWindow()
     if not icon.isNull():
         window.setWindowIcon(icon)
-    window.show()
+    if not start_in_tray:
+        window.show()
 
     # Raise and focus running instance when another launch attempt happens
     def handle_activation():

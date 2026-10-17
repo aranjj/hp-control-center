@@ -962,8 +962,9 @@ class CollapsibleSection(QFrame):
 
 class ThreadIndicatorWidget(QWidget):
     """
-    Displays a row of thread indicator chips/dots for hybrid CPU architecture.
-    Threads are colored distinctly by P-core / E-core, and dimmed when parked/offline.
+    Displays an organized, responsive active CPU topology map.
+    Separates P-cores (hyperthreaded) and E-cores onto dedicated rows with live status badges,
+    clear core cluster groupings, and dynamic wrapping so it is never cropped.
     """
 
     def __init__(self, p_threads: list[int] = None, e_threads: list[int] = None, parent=None):
@@ -972,75 +973,153 @@ class ThreadIndicatorWidget(QWidget):
         self.e_threads = e_threads if e_threads is not None else list(range(4, 12))
         self.all_threads = sorted(self.p_threads + self.e_threads)
         self.online_map = {cpu: True for cpu in self.all_threads}
-        self.setFixedHeight(34)
+        self._chip_rects = []
         self.setMouseTracking(True)
+        self.setFixedHeight(78)
 
     def set_online_map(self, online_map: dict[int, bool]):
         self.online_map.update(online_map)
         self.update()
 
+    def sizeHint(self):
+        return QSize(400, 78)
+
+    def minimumSizeHint(self):
+        return QSize(260, 78)
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.TextAntialiasing)
 
         pal = self.palette()
-        p_online_col = pal.highlight().color()
-        e_online_col = QColor("#00cec9")  # Distinct secondary color for E-cores
-        offline_col = pal.mid().color()
-        text_dim = pal.placeholderText().color()
+        p_col = pal.highlight().color()
+        e_col = QColor("#00cec9")  # Distinct secondary color for E-cores
+        offline_bg = QColor(128, 128, 128, 30)
+        offline_border = QColor(128, 128, 128, 80)
+        muted_text = pal.placeholderText().color()
+        fg_text = pal.windowText().color()
 
-        n = len(self.all_threads)
-        if n == 0:
+        self._chip_rects.clear()
+        w = float(self.width())
+        if w < 10:
             p.end()
             return
 
-        dot_w = 40.0
-        dot_h = 24.0
-        gap = 6.0
-        start_x = 0.0
-        y = (self.height() - dot_h) / 2.0
+        online_count = sum(1 for c in self.all_threads if self.online_map.get(c, True))
+        total_count = len(self.all_threads)
 
-        font = self.font()
-        font.setPointSize(9)
-        font.setBold(True)
-        p.setFont(font)
+        # Header: Left title, Right status badge
+        font_hdr = self.font()
+        font_hdr.setPointSize(9)
+        font_hdr.setBold(True)
+        p.setFont(font_hdr)
+        p.setPen(fg_text)
+        p.drawText(QRectF(0, 0, max(0.0, w - 120), 18), Qt.AlignLeft | Qt.AlignVCenter, "Active Thread Topology")
 
-        for i, cpu in enumerate(self.all_threads):
-            x = start_x + i * (dot_w + gap)
-            rect = QRectF(x, y, dot_w, dot_h)
-            is_p = cpu in self.p_threads
-            is_online = self.online_map.get(cpu, True)
+        badge_text = f"{online_count} / {total_count} Online"
+        font_badge = self.font()
+        font_badge.setPointSize(9)
+        font_badge.setBold(True)
+        p.setFont(font_badge)
+        p.setPen(p_col if online_count == total_count else QColor("#f39c12"))
+        p.drawText(QRectF(max(0.0, w - 120), 0, 120, 18), Qt.AlignRight | Qt.AlignVCenter, badge_text)
 
-            if is_online:
-                bg = p_online_col if is_p else e_online_col
-                fg = pal.highlightedText().color() if is_p else QColor("#000000")
+        font_lbl = self.font()
+        font_lbl.setPointSize(8)
+        font_lbl.setBold(False)
+
+        font_chip = self.font()
+        font_chip.setPointSize(9)
+        font_chip.setBold(True)
+
+        chip_w = 34.0
+        chip_h = 24.0
+        gap = 4.0
+        label_w = 78.0
+
+        # Row 1: P-Threads
+        y_p = 22.0
+        p.setFont(font_lbl)
+        p.setPen(muted_text)
+        p.drawText(QRectF(0, y_p, label_w, chip_h), Qt.AlignLeft | Qt.AlignVCenter, "P-Threads:")
+
+        cur_x = label_w
+        for i, cpu in enumerate(self.p_threads):
+            # Extra gap between physical P-core SMT thread pairs
+            if i > 0 and i % 2 == 0:
+                cur_x += 8.0
+            rect = QRectF(cur_x, y_p, chip_w, chip_h)
+            is_on = self.online_map.get(cpu, True)
+            self._chip_rects.append((rect, cpu, True, is_on))
+
+            if is_on:
+                p.setPen(Qt.NoPen)
+                p.setBrush(p_col)
+                p.drawRoundedRect(rect, 5.0, 5.0)
+                p.setPen(pal.highlightedText().color())
             else:
-                bg = offline_col
-                fg = text_dim
+                p.setPen(offline_border)
+                p.setBrush(offline_bg)
+                p.drawRoundedRect(rect, 5.0, 5.0)
+                p.setPen(muted_text)
 
-            p.setPen(Qt.NoPen)
-            p.setBrush(bg)
-            p.drawRoundedRect(rect, 6.0, 6.0)
+            p.setFont(font_chip)
+            p.drawText(rect, Qt.AlignCenter, f"P{cpu}")
+            cur_x += chip_w + gap
 
-            label = f"P{cpu}" if is_p else f"E{cpu}"
-            p.setPen(fg)
-            p.drawText(rect, Qt.AlignCenter, label)
+        # Row 2: E-Cores
+        y_e = 50.0
+        p.setFont(font_lbl)
+        p.setPen(muted_text)
+        p.drawText(QRectF(0, y_e, label_w, chip_h), Qt.AlignLeft | Qt.AlignVCenter, "E-Cores:")
+
+        cur_x = label_w
+        for i, cpu in enumerate(self.e_threads):
+            # Extra gap between 4-core E-clusters
+            if i > 0 and i % 4 == 0:
+                cur_x += 8.0
+            # Wrap to next row if overflowing width
+            if cur_x + chip_w > w:
+                cur_x = label_w
+                y_e += chip_h + gap
+
+            rect = QRectF(cur_x, y_e, chip_w, chip_h)
+            is_on = self.online_map.get(cpu, True)
+            self._chip_rects.append((rect, cpu, False, is_on))
+
+            if is_on:
+                p.setPen(Qt.NoPen)
+                p.setBrush(e_col)
+                p.drawRoundedRect(rect, 5.0, 5.0)
+                p.setPen(QColor("#000000"))
+            else:
+                p.setPen(offline_border)
+                p.setBrush(offline_bg)
+                p.drawRoundedRect(rect, 5.0, 5.0)
+                p.setPen(muted_text)
+
+            p.setFont(font_chip)
+            p.drawText(rect, Qt.AlignCenter, f"E{cpu}")
+            cur_x += chip_w + gap
+
+        total_h = int(y_e + chip_h + 4.0)
+        if total_h != self.height():
+            self.setFixedHeight(total_h)
 
         p.end()
 
     def mouseMoveEvent(self, event):
-        dot_w = 40.0
-        gap = 6.0
-        pos = event.position().x()
-        idx = int(pos // (dot_w + gap))
-        if 0 <= idx < len(self.all_threads):
-            cpu = self.all_threads[idx]
-            is_p = cpu in self.p_threads
-            is_on = self.online_map.get(cpu, True)
-            core_type = "P-core" if is_p else "E-core"
-            state = "Online" if is_on else "Offline (Parked)"
-            self.setToolTip(f"CPU {cpu} ({core_type}): {state}")
-        else:
+        pos = event.position()
+        found = False
+        for rect, cpu, is_p, is_on in self._chip_rects:
+            if rect.contains(pos):
+                core_type = "P-core (Hyperthreaded)" if is_p else "E-core"
+                state = "Online" if is_on else "Offline (Parked)"
+                self.setToolTip(f"CPU {cpu} • {core_type}: {state}")
+                found = True
+                break
+        if not found:
             self.setToolTip("")
         super().mouseMoveEvent(event)
 
