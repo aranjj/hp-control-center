@@ -9,6 +9,7 @@ Includes:
 - RevertCountdownDialog for safety revert
 """
 
+import os
 import logging
 import re
 from collections import deque
@@ -28,11 +29,11 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QSizePolicy,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QObject, QByteArray, QSize, QRectF
-from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen, QLinearGradient, QIcon, QPixmap
+from PySide6.QtCore import Qt, Signal, QTimer, QObject, QByteArray, QSize, QRectF, QPointF
+from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen, QLinearGradient, QIcon, QPixmap, QPolygonF
 from PySide6.QtSvg import QSvgRenderer
 
-from ui.styles import STATUS_WARN, STATUS_CRITICAL
+from ui.styles import STATUS_WARN, STATUS_CRITICAL, STATUS_OK
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,52 @@ def make_tinted_icon(theme_name: str, color: QColor, size: int = 16, prefer_bund
     return QIcon.fromTheme(theme_name)
 
 
+def get_symbolic_app_icon(tint_color: QColor = None) -> QIcon:
+    """Returns a symbolic monochrome icon for the taskbar / system tray.
+    Uses the bundled hp-control-center-symbolic SVG tinted to match the active
+    palette/theme, with fallbacks to system theme and monochrome directories."""
+    app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    symbolic_svg = os.path.join(app_dir, "hicolor", "symbolic", "apps", "hp-control-center-symbolic.svg")
+
+    if QIcon.hasThemeIcon("hp-control-center-symbolic"):
+        theme_sym = QIcon.fromTheme("hp-control-center-symbolic")
+        if not theme_sym.isNull():
+            return theme_sym
+
+    if os.path.exists(symbolic_svg):
+        try:
+            with open(symbolic_svg, "r", encoding="utf-8") as f:
+                svg_data = f.read()
+            col_hex = tint_color.name() if tint_color else "#ffffff"
+            svg_data = svg_data.replace(".ColorScheme-Text{color:#232629}", f".ColorScheme-Text{{color:{col_hex}}}")
+            svg_data = svg_data.replace("currentColor", col_hex)
+
+            icon = QIcon()
+            renderer = QSvgRenderer(QByteArray(svg_data.encode("utf-8")))
+            for sz in (16, 22, 24, 32, 48, 64):
+                pix = QPixmap(sz, sz)
+                pix.fill(Qt.transparent)
+                p = QPainter(pix)
+                renderer.render(p)
+                p.end()
+                icon.addPixmap(pix)
+            icon.setIsMask(True)
+            return icon
+        except Exception as e:
+            logger.warning(f"Failed to render bundled symbolic icon: {e}")
+
+    # Fallback to monochrome assets
+    is_dark = (tint_color.lightness() > 128) if tint_color else True
+    variant = "light" if is_dark else "dark"
+    mono_svg = os.path.join(app_dir, "monochrome", variant, "hp-control-center-mono.svg")
+    if os.path.exists(mono_svg):
+        icon = QIcon(mono_svg)
+        icon.setIsMask(True)
+        return icon
+
+    return QIcon.fromTheme("hp-control-center")
+
+
 class ToggleSwitch(QCheckBox):
     """Modern toggle switch widget adhering to KDE/Qt palette roles.
     Unchecked = muted track (Mid) and knob on the left (WindowText).
@@ -160,6 +207,7 @@ class ToggleSwitch(QCheckBox):
             p.setPen(pal.windowText().color() if is_en else pal.placeholderText().color())
             text_x = int(track_x + track_w + 10.0)
             text_rect = self.rect().adjusted(text_x, 0, 0, 0)
+            p.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self.text())
         p.end()
 
 
@@ -1258,3 +1306,188 @@ class RevertCountdownDialog(QDialog):
         self.confirmed = False
         self.timer.stop()
         self.reject()
+
+
+class GpuMemoryHeadroomBar(QWidget):
+    """Visual memory headroom gauge displaying used/available RAM, limit marker, and status chip."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.total_ram_gb = 16.0
+        self.available_ram_gb = 8.0
+        self.chosen_limit_gb = None
+        self.setFixedHeight(64)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def set_memory_state(self, total_gb: float, available_gb: float, limit_gb: float = None):
+        self.total_ram_gb = max(1.0, float(total_gb))
+        self.available_ram_gb = max(0.0, float(available_gb))
+        self.chosen_limit_gb = float(limit_gb) if limit_gb is not None else None
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        pal = self.palette()
+
+        w = float(self.width())
+        used_ram_gb = max(0.0, self.total_ram_gb - self.available_ram_gb)
+        is_limit_active = self.chosen_limit_gb is not None and self.chosen_limit_gb > 0
+        is_overcommitted = is_limit_active and (self.chosen_limit_gb > self.available_ram_gb)
+
+        # -----------------------------------------------------------------
+        # 1. TOP ROW: Legend on left, Status Chip on right
+        # -----------------------------------------------------------------
+        legend_y = 3.0
+        swatch_sz = 9.0
+
+        font_legend = self.font()
+        font_legend.setPointSize(9)
+        p.setFont(font_legend)
+        fm = p.fontMetrics()
+
+        cur_x = 0.0
+
+        # Swatch 1: Used RAM
+        p.setPen(Qt.NoPen)
+        p.setBrush(pal.mid())
+        p.drawRoundedRect(QRectF(cur_x, legend_y + 3.0, swatch_sz, swatch_sz), 2.0, 2.0)
+        cur_x += swatch_sz + 5.0
+        p.setPen(pal.windowText().color())
+        txt_used = f"Used: {used_ram_gb:.1f} GB"
+        p.drawText(QRectF(cur_x, legend_y, fm.horizontalAdvance(txt_used) + 4, 16.0), Qt.AlignLeft | Qt.AlignVCenter, txt_used)
+        cur_x += fm.horizontalAdvance(txt_used) + 14.0
+
+        # Swatch 2: Available RAM
+        p.setPen(QPen(pal.mid(), 1))
+        p.setBrush(pal.midlight())
+        p.drawRoundedRect(QRectF(cur_x, legend_y + 3.0, swatch_sz, swatch_sz), 2.0, 2.0)
+        cur_x += swatch_sz + 5.0
+        p.setPen(pal.windowText().color())
+        txt_avail = f"Available: {self.available_ram_gb:.1f} GB"
+        p.drawText(QRectF(cur_x, legend_y, fm.horizontalAdvance(txt_avail) + 4, 16.0), Qt.AlignLeft | Qt.AlignVCenter, txt_avail)
+        cur_x += fm.horizontalAdvance(txt_avail) + 14.0
+
+        # Swatch 3: Limit Marker (if limit is enabled)
+        if is_limit_active:
+            marker_color = QColor(STATUS_WARN) if is_overcommitted else pal.highlight().color()
+            p.setPen(Qt.NoPen)
+            p.setBrush(marker_color)
+            p.drawRoundedRect(QRectF(cur_x, legend_y + 3.0, swatch_sz, swatch_sz), 2.0, 2.0)
+            cur_x += swatch_sz + 5.0
+            p.setPen(marker_color)
+            txt_limit_legend = f"Limit Marker: {self.chosen_limit_gb:.0f} GB"
+            p.drawText(QRectF(cur_x, legend_y, fm.horizontalAdvance(txt_limit_legend) + 4, 16.0), Qt.AlignLeft | Qt.AlignVCenter, txt_limit_legend)
+
+        # Status Chip (Requirements 6 & 2)
+        font_chip = self.font()
+        font_chip.setPointSize(10)
+        font_chip.setBold(True)
+        p.setFont(font_chip)
+        fm_chip = p.fontMetrics()
+
+        if not is_limit_active:
+            chip_text = "No limit (Mesa default)"
+            chip_bg = pal.alternateBase().color()
+            chip_border = pal.mid().color()
+            chip_text_color = pal.placeholderText().color()
+        elif is_overcommitted:
+            over_gb = self.chosen_limit_gb - self.available_ram_gb
+            chip_text = f"⚠ Overcommit: exceeds available by {over_gb:.1f} GB"
+            chip_bg = QColor(230, 126, 34, 45)
+            chip_border = QColor(STATUS_WARN)
+            chip_text_color = QColor(STATUS_WARN)
+        else:
+            headroom = self.available_ram_gb - self.chosen_limit_gb
+            chip_text = f"Limit: {self.chosen_limit_gb:.0f} GB  •  Headroom: {headroom:.1f} GB"
+            chip_bg = QColor(39, 174, 96, 40)
+            chip_border = QColor(STATUS_OK)
+            chip_text_color = QColor(STATUS_OK)
+
+        chip_tw = fm_chip.horizontalAdvance(chip_text)
+        chip_w = chip_tw + 20.0
+        chip_h = 22.0
+        chip_x = max(cur_x + 10.0, w - chip_w)
+        r_chip = QRectF(chip_x, 1.0, chip_w, chip_h)
+
+        p.setPen(QPen(chip_border, 1.0))
+        p.setBrush(chip_bg)
+        p.drawRoundedRect(r_chip, 6.0, 6.0)
+
+        p.setPen(chip_text_color)
+        p.drawText(r_chip, Qt.AlignCenter, chip_text)
+
+        # -----------------------------------------------------------------
+        # 2. MIDDLE ROW: Memory Bar & Limit Marker
+        # -----------------------------------------------------------------
+        bar_y = 28.0
+        bar_h = 16.0
+        r_bar = QRectF(0.0, bar_y, w, bar_h)
+
+        # Full track: Available RAM
+        p.setPen(Qt.NoPen)
+        p.setBrush(pal.midlight())
+        p.drawRoundedRect(r_bar, 4.0, 4.0)
+
+        # Segment: Used RAM
+        used_ratio = min(1.0, max(0.0, used_ram_gb / self.total_ram_gb))
+        used_w = w * used_ratio
+        if used_w > 0:
+            clip_path = QPainterPath()
+            clip_path.addRoundedRect(r_bar, 4.0, 4.0)
+            p.save()
+            p.setClipPath(clip_path)
+            p.setBrush(pal.mid())
+            p.drawRect(QRectF(0.0, bar_y, used_w, bar_h))
+            p.restore()
+
+        # Divider line between Used and Available
+        if 0 < used_w < w:
+            p.setPen(QPen(pal.dark().color(), 1.0))
+            p.drawLine(QPointF(used_w, bar_y), QPointF(used_w, bar_y + bar_h))
+
+        # Marker on the bar: Where the chosen limit falls (Requirement 5)
+        if is_limit_active:
+            limit_ratio = min(1.0, max(0.0, self.chosen_limit_gb / self.total_ram_gb))
+            marker_x = w * limit_ratio
+            marker_color = QColor(STATUS_WARN) if is_overcommitted else pal.highlight().color()
+
+            # Downward pointer triangle at top of bar
+            p.setPen(Qt.NoPen)
+            p.setBrush(marker_color)
+            tri = QPolygonF([
+                QPointF(marker_x - 5.0, bar_y - 5.0),
+                QPointF(marker_x + 5.0, bar_y - 5.0),
+                QPointF(marker_x, bar_y + 1.0),
+            ])
+            p.drawPolygon(tri)
+
+            # Vertical needle line spanning through the bar
+            p.setPen(QPen(marker_color, 2.0))
+            p.drawLine(QPointF(marker_x, bar_y), QPointF(marker_x, bar_y + bar_h + 3.0))
+
+        # -----------------------------------------------------------------
+        # 3. BOTTOM ROW: Memory scale labels
+        # -----------------------------------------------------------------
+        font_sub = self.font()
+        font_sub.setPointSize(8)
+        p.setFont(font_sub)
+        p.setPen(pal.placeholderText().color())
+
+        scale_y = bar_y + bar_h + 3.0
+        p.drawText(QRectF(0.0, scale_y, 60.0, 14.0), Qt.AlignLeft | Qt.AlignVCenter, "0 GB")
+        total_lbl = f"Total: {self.total_ram_gb:.1f} GB"
+        p.drawText(QRectF(w - 120.0, scale_y, 120.0, 14.0), Qt.AlignRight | Qt.AlignVCenter, total_lbl)
+
+        if is_limit_active:
+            limit_ratio = min(1.0, max(0.0, self.chosen_limit_gb / self.total_ram_gb))
+            marker_x = w * limit_ratio
+            lbl_marker = f"{self.chosen_limit_gb:.0f} GB Limit"
+            fm_sub = p.fontMetrics()
+            lbl_w = fm_sub.horizontalAdvance(lbl_marker)
+            lbl_x = max(40.0, min(w - 130.0, marker_x - (lbl_w / 2.0)))
+            p.setPen(marker_color)
+            p.drawText(QRectF(lbl_x, scale_y, lbl_w + 10, 14.0), Qt.AlignCenter, lbl_marker)
+
+        p.end()
+

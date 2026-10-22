@@ -166,6 +166,16 @@ QSlider::handle:horizontal:pressed {{
     background: palette(highlight);
     border: 3px solid #ffffff;
 }}
+QSlider:disabled {{
+    opacity: 0.5;
+}}
+QSlider::sub-page:horizontal:disabled {{
+    background: palette(mid);
+}}
+QSlider::handle:horizontal:disabled {{
+    background: palette(mid);
+    border: 3px solid palette(midlight);
+}}
 
 /* SpinBox */
 QSpinBox {{
@@ -179,6 +189,11 @@ QSpinBox {{
 }}
 QSpinBox:focus {{
     border: 1px solid palette(highlight);
+}}
+QSpinBox:disabled {{
+    background-color: palette(window);
+    color: palette(placeholder-text);
+    border: 1px solid palette(midlight);
 }}
 
 /* ToolButtons */
@@ -301,6 +316,18 @@ QPushButton.SecondaryButton {{
 QPushButton.SecondaryButton:hover {{
     border-color: palette(highlight);
     color: palette(highlight);
+}}
+QPushButton.SecondaryButton:checked {{
+    background-color: palette(highlight);
+    color: palette(highlighted-text);
+    border: 1px solid palette(highlight);
+    font-weight: 700;
+}}
+QPushButton.SecondaryButton:disabled {{
+    background-color: palette(window);
+    color: palette(placeholder-text);
+    border: 1px solid palette(midlight);
+    opacity: 0.55;
 }}
 
 /* Typography */

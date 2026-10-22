@@ -31,8 +31,10 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QFileDialog,
     QSlider,
+    QSpinBox,
+    QToolButton,
 )
-from PySide6.QtCore import Qt, QTimer, QSettings, QEvent
+from PySide6.QtCore import Qt, QTimer, QSettings, QEvent, QThread, Signal
 from PySide6.QtGui import QIcon, QColor
 
 from core.telemetry import TelemetryReader
@@ -41,6 +43,19 @@ from core.display import DisplayManager
 from core.powerprofiles import is_ppd_available, get_ppd_profile
 from core.sysinfo import SystemInfoReader, get_cpu_display_names, get_gpu_display_names
 from core.hardware import get_cpu_topology_info, get_core_topology_details, get_gpu_hardware_limits
+from core.gpu_memory import (
+    detect_anv_support_and_format,
+    get_system_memory_info,
+    read_current_status,
+    read_vulkan_heap_size,
+    format_limit_value,
+    parse_raw_value_to_gb,
+    apply_gpu_memory_limit,
+    get_running_vulkan_apps,
+    get_launch_strings,
+    APP_CONFIG_NAME,
+    ENV_VAR_NAME,
+)
 from ui.styles import (
     STATUS_OK,
     STATUS_WARN,
@@ -58,7 +73,9 @@ from ui.widgets import (
     SegmentedControl,
     RevertCountdownDialog,
     make_tinted_icon,
+    get_symbolic_app_icon,
     ToggleSwitch,
+    GpuMemoryHeadroomBar,
 )
 
 SOCKET_PATH = "/tmp/hp_control_center.sock"
@@ -70,6 +87,24 @@ APP_NAME = "Control Center"
 LABEL_COL_WIDTH = 130
 TRAILING_COL_WIDTH = 130
 COMBO_WIDTH = 220
+
+
+class GpuMemoryDetectWorker(QThread):
+    """Background worker that executes vulkaninfo detection without stalling the GUI."""
+    finished = Signal(dict)
+
+    def run(self):
+        det = detect_anv_support_and_format()
+        status = read_current_status(det.get("format"))
+        env_val = status.get("file_val") or status.get("session_val")
+        heap_bytes, err = read_vulkan_heap_size(env_val)
+        self.finished.emit({
+            "detection": det,
+            "status": status,
+            "actual_heap_bytes": heap_bytes,
+            "heap_error": err,
+        })
+
 
 
 class MainWindow(QMainWindow):
@@ -107,9 +142,21 @@ class MainWindow(QMainWindow):
             saved_theme = "Follow System (KDE / Qt Palette)"
         self.current_theme = saved_theme
 
+        # GPU Memory limit state (isolated from profiles & daemon)
+        self.gpu_mem_supported = False
+        self.gpu_mem_format = None
+        self.gpu_mem_info = get_system_memory_info()
+        self.gpu_mem_actual_heap_bytes = None
+
         self._setup_ui()
         self._apply_theme(self.current_theme)
         self._setup_tray()
+
+        # Background worker for Mesa Vulkan memory limit detection (Step 0)
+        self.gpu_mem_worker = GpuMemoryDetectWorker(self)
+        self.gpu_mem_worker.finished.connect(self._on_gpu_mem_detected)
+        self.gpu_mem_worker.start()
+
 
         # Telemetry Timer (1 Hz polling)
         self.timer = QTimer(self)
@@ -152,6 +199,9 @@ class MainWindow(QMainWindow):
         """Remember window size/position and profile configuration on close."""
         self.settings.setValue("geometry", self.saveGeometry())
         self.profile_mgr.save_config()
+        if hasattr(self, "gpu_mem_worker") and self.gpu_mem_worker.isRunning():
+            self.gpu_mem_worker.quit()
+            self.gpu_mem_worker.wait(1000)
         super().closeEvent(event)
 
     def resizeEvent(self, event):
@@ -176,12 +226,17 @@ class MainWindow(QMainWindow):
 
         # 3. Bottom bar adaptation
         if hasattr(self, "btn_reset_all") and hasattr(self, "btn_apply"):
-            if width <= 920:
+            if width <= 1040:
                 self.btn_reset_all.setText("Reset")
                 self.btn_apply.setText("Apply")
             else:
                 self.btn_reset_all.setText("Reset Defaults")
                 self.btn_apply.setText("Apply Settings")
+        if hasattr(self, "gpu_mem_status_badge") and getattr(self, "_active_gpu_mem_limit", None):
+            if width > 1080:
+                self.gpu_mem_status_badge.setText(f"GPU memory limit active: {self._active_gpu_mem_limit} GB")
+            else:
+                self.gpu_mem_status_badge.setText(f"GPU limit: {self._active_gpu_mem_limit} GB")
         if hasattr(self, "mini_telemetry_lbl"):
             self.mini_telemetry_lbl.setVisible(width > 860)
 
@@ -306,7 +361,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addStretch()
 
         # Mini footer in sidebar
-        self.side_footer_lbl = QLabel("v0.2.1")
+        self.side_footer_lbl = QLabel("v0.2.3")
         self.side_footer_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 10px; padding-left: 12px;")
         sidebar_layout.addWidget(self.side_footer_lbl)
 
@@ -411,7 +466,19 @@ class MainWindow(QMainWindow):
         self.mini_telemetry_lbl.setStyleSheet("color: palette(placeholder-text); font-size: 12px; font-weight: 500;")
         bottom_bar.addWidget(self.mini_telemetry_lbl)
 
+        # Persistent GPU memory limit status badge (visible across all tabs while limit is set)
+        self.gpu_mem_status_badge = QLabel("")
+        self.gpu_mem_status_badge.setObjectName("GpuMemStatusBadge")
+        self.gpu_mem_status_badge.setStyleSheet(
+            f"background-color: rgba(39, 174, 96, 0.18); color: {STATUS_OK}; "
+            f"border: 1px solid {STATUS_OK}; font-size: 11px; font-weight: 700; "
+            "padding: 2px 8px; border-radius: 4px;"
+        )
+        self.gpu_mem_status_badge.setVisible(False)
+        bottom_bar.addWidget(self.gpu_mem_status_badge)
+
         bottom_bar.addStretch()
+
 
         # "N Unsaved Changes" Label
         self.unsaved_lbl = QLabel("0 unsaved changes")
@@ -458,7 +525,7 @@ class MainWindow(QMainWindow):
         hud_grid.setColumnStretch(2, 1)
 
         # Tile 1: Package Power with Throttle Reason
-        self.card_power = StatCard("Package Power", "0.0", "W", "Target: 25.0 W", min_floor=0.0, max_floor=30.0, accent_color="#38bdf8")
+        self.card_power = StatCard("Package Power", "0.0", "W", "Target: 25.0 W", min_floor=0.0, max_floor=55.0, accent_color="#38bdf8")
         hud_grid.addWidget(self.card_power, 0, 0)
 
         # Tile 2: Package Temp (warn at 80°C, crit at 90°C)
@@ -527,11 +594,11 @@ class MainWindow(QMainWindow):
         title_pwr.setProperty("class", "SectionTitle")
         grid_pwr.addWidget(title_pwr, 0, 0, 1, 3)
 
-        self.slider_pl1 = SliderSetting("PL1 Sustained Limit (Long-term)", 10, 30, 25, "W", label_width=LABEL_COL_WIDTH)
+        self.slider_pl1 = SliderSetting("PL1 Sustained Limit (Long-term)", 10, 35, 25, "W", label_width=LABEL_COL_WIDTH)
         self.slider_pl1.valueChanged.connect(self._on_pl1_changed)
         self.slider_pl1.add_to_grid(grid_pwr, 1)
 
-        self.slider_pl2 = SliderSetting("PL2 Burst Limit (Short-term)", 10, 45, 28, "W", label_width=LABEL_COL_WIDTH)
+        self.slider_pl2 = SliderSetting("PL2 Burst Limit (Short-term)", 10, 55, 28, "W", label_width=LABEL_COL_WIDTH)
         self.slider_pl2.valueChanged.connect(self._on_pl2_changed)
         self.slider_pl2.add_to_grid(grid_pwr, 2)
 
@@ -877,13 +944,649 @@ class MainWindow(QMainWindow):
         self.combo_gpu_power.addItems(["base", "power_saving"])
         self.combo_gpu_power.currentIndexChanged.connect(self._on_setting_modified)
         grid.addWidget(lbl_gp, 4, 0)
-        grid.addWidget(self.combo_gpu_power, 4, 1, Qt.AlignLeft)
-
+        grid.addWidget(self.combo_gpu_power, 4, 1, 1, 2, Qt.AlignLeft)
         layout.addWidget(card)
+        layout.addWidget(self._build_gpu_memory_card())
         layout.addStretch()
 
         scroll.setWidget(content)
         return scroll
+
+    def _build_gpu_memory_card(self) -> QWidget:
+        """Card for managing Mesa Intel Vulkan ANV_SYS_MEM_LIMIT memory cap."""
+        self.gpu_mem_card = QFrame()
+        self.gpu_mem_card.setProperty("class", "CardFrame")
+        layout = QVBoxLayout(self.gpu_mem_card)
+        layout.setSizeConstraint(QVBoxLayout.SetMinimumSize)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(12)
+
+
+        # Title
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(10)
+        title = QLabel("Max GPU memory (Vulkan)")
+        title.setProperty("class", "SectionTitle")
+        title_row.addWidget(title)
+
+        # Persistent Card Badge
+        self.gpu_mem_card_badge = QLabel("")
+        self.gpu_mem_card_badge.setObjectName("GpuMemCardBadge")
+        self.gpu_mem_card_badge.setStyleSheet(
+            f"background-color: rgba(39, 174, 96, 0.18); color: {STATUS_OK}; "
+            f"border: 1px solid {STATUS_OK}; font-size: 11px; font-weight: 700; "
+            "padding: 2px 8px; border-radius: 4px;"
+        )
+        self.gpu_mem_card_badge.setVisible(False)
+        title_row.addWidget(self.gpu_mem_card_badge)
+
+        title_row.addStretch()
+        layout.addLayout(title_row)
+
+
+        # One-line explanation
+        desc = QLabel(
+            "Caps system memory Vulkan apps may use for the iGPU. Affects only processes launched after it is set."
+        )
+        desc.setProperty("class", "Footnote")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        # Feature unavailable error banner
+        self.gpu_mem_warning_banner = QFrame()
+        self.gpu_mem_warning_banner.setProperty("class", "WarningBox")
+        wb_layout = QHBoxLayout(self.gpu_mem_warning_banner)
+        wb_layout.setContentsMargins(10, 6, 10, 6)
+        self.gpu_mem_warning_lbl = QLabel("")
+        self.gpu_mem_warning_lbl.setStyleSheet(f"color: {STATUS_CRITICAL}; font-weight: 600; font-size: 12px;")
+        self.gpu_mem_warning_lbl.setWordWrap(True)
+        wb_layout.addWidget(self.gpu_mem_warning_lbl)
+        self.gpu_mem_warning_banner.setVisible(False)
+        layout.addWidget(self.gpu_mem_warning_banner)
+
+        # Session mismatch notice banner
+        self.gpu_mem_mismatch_banner = QFrame()
+        self.gpu_mem_mismatch_banner.setStyleSheet(
+            f"background-color: rgba(230, 126, 34, 0.15); border: 1px solid {STATUS_WARN}; border-radius: 6px; padding: 6px 10px;"
+        )
+        mb_layout = QHBoxLayout(self.gpu_mem_mismatch_banner)
+        mb_layout.setContentsMargins(8, 4, 8, 4)
+        self.gpu_mem_mismatch_lbl = QLabel("")
+        self.gpu_mem_mismatch_lbl.setStyleSheet(f"color: {STATUS_WARN}; font-weight: 600; font-size: 12px;")
+        self.gpu_mem_mismatch_lbl.setWordWrap(True)
+        mb_layout.addWidget(self.gpu_mem_mismatch_lbl)
+        self.gpu_mem_mismatch_banner.setVisible(False)
+        layout.addWidget(self.gpu_mem_mismatch_banner)
+
+        # Preset chips row
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(8)
+        lbl_presets = QLabel("Presets:")
+        lbl_presets.setProperty("class", "FormLabel")
+        lbl_presets.setFixedWidth(LABEL_COL_WIDTH)
+        preset_row.addWidget(lbl_presets)
+
+        max_gb = self.gpu_mem_info.get("max_limit_gb", 12)
+        self.chip_gaming = QPushButton("Gaming (4 GB)")
+        self.chip_gaming.setProperty("class", "SecondaryButton")
+        self.chip_gaming.setCheckable(True)
+        self.chip_gaming.setCursor(Qt.PointingHandCursor)
+        self.chip_gaming.clicked.connect(lambda: self._select_gpu_mem_preset(4))
+        preset_row.addWidget(self.chip_gaming)
+
+        self.chip_balanced = QPushButton("Balanced (8 GB)")
+        self.chip_balanced.setProperty("class", "SecondaryButton")
+        self.chip_balanced.setCheckable(True)
+        self.chip_balanced.setCursor(Qt.PointingHandCursor)
+        self.chip_balanced.clicked.connect(lambda: self._select_gpu_mem_preset(8))
+        preset_row.addWidget(self.chip_balanced)
+
+        self.chip_max = QPushButton(f"AI / Max ({max_gb} GB)")
+        self.chip_max.setProperty("class", "SecondaryButton")
+        self.chip_max.setCheckable(True)
+        self.chip_max.setCursor(Qt.PointingHandCursor)
+        self.chip_max.clicked.connect(lambda: self._select_gpu_mem_preset(max_gb))
+        preset_row.addWidget(self.chip_max)
+
+        self.chip_none = QPushButton("No limit")
+        self.chip_none.setProperty("class", "SecondaryButton")
+        self.chip_none.setCheckable(True)
+        self.chip_none.setCursor(Qt.PointingHandCursor)
+        self.chip_none.clicked.connect(lambda: self._select_gpu_mem_preset(None))
+        preset_row.addWidget(self.chip_none)
+
+        preset_row.addStretch()
+        layout.addLayout(preset_row)
+
+        # Slider and Controls Grid
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 4, 0, 4)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(8)
+        grid.setColumnMinimumWidth(0, LABEL_COL_WIDTH)
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(2, 0)
+
+        self.chk_gpu_mem_limit = ToggleSwitch("Limit enabled")
+        self.chk_gpu_mem_limit.setFixedWidth(LABEL_COL_WIDTH)
+        self.chk_gpu_mem_limit.toggled.connect(self._on_gpu_mem_toggle)
+        grid.addWidget(self.chk_gpu_mem_limit, 0, 0)
+
+        slider_box = QVBoxLayout()
+        slider_box.setSpacing(2)
+        slider_box.setContentsMargins(0, 0, 0, 0)
+
+        self.slider_gpu_mem = QSlider(Qt.Horizontal)
+        self.slider_gpu_mem.setRange(1, max_gb)
+        self.slider_gpu_mem.setValue(min(4, max_gb))
+        self.slider_gpu_mem.valueChanged.connect(self._on_gpu_mem_slider_changed)
+        slider_box.addWidget(self.slider_gpu_mem)
+
+        range_row = QHBoxLayout()
+        range_row.setContentsMargins(0, 0, 0, 0)
+        self.lbl_gpu_mem_min = QLabel("1 GB")
+        self.lbl_gpu_mem_min.setProperty("class", "Footnote")
+        range_row.addWidget(self.lbl_gpu_mem_min)
+        range_row.addStretch()
+        self.lbl_gpu_mem_max = QLabel(f"{max_gb} GB")
+        self.lbl_gpu_mem_max.setProperty("class", "Footnote")
+        range_row.addWidget(self.lbl_gpu_mem_max)
+        slider_box.addLayout(range_row)
+
+        self.lbl_gpu_mem_unit_note = QLabel("")
+        self.lbl_gpu_mem_unit_note.setProperty("class", "Footnote")
+        self.lbl_gpu_mem_unit_note.setWordWrap(True)
+        self.lbl_gpu_mem_unit_note.setStyleSheet("color: palette(placeholder-text); font-size: 11px; padding-top: 3px;")
+        slider_box.addWidget(self.lbl_gpu_mem_unit_note)
+
+        grid.addLayout(slider_box, 0, 1)
+
+        trailing_box = QHBoxLayout()
+        trailing_box.setSpacing(6)
+        trailing_box.setContentsMargins(0, 0, 0, 0)
+
+        self.spin_gpu_mem = QSpinBox()
+        self.spin_gpu_mem.setRange(1, max_gb)
+        self.spin_gpu_mem.setValue(min(4, max_gb))
+        self.spin_gpu_mem.setSuffix(" GB")
+        self.spin_gpu_mem.setFixedWidth(90)
+        self.spin_gpu_mem.setAlignment(Qt.AlignCenter)
+        self.spin_gpu_mem.setProperty("class", "SettingSpin")
+        self.spin_gpu_mem.valueChanged.connect(self._on_gpu_mem_spin_changed)
+        trailing_box.addWidget(self.spin_gpu_mem)
+
+        self.btn_gpu_mem_undo = QToolButton()
+        self.btn_gpu_mem_undo.setIcon(make_tinted_icon("edit-undo-symbolic", self.palette().buttonText().color(), 14))
+        self.btn_gpu_mem_undo.setToolTip("Reset to No limit (Mesa default)")
+        self.btn_gpu_mem_undo.setProperty("class", "SettingReset")
+        self.btn_gpu_mem_undo.setCursor(Qt.PointingHandCursor)
+        self.btn_gpu_mem_undo.clicked.connect(lambda: self._select_gpu_mem_preset(None))
+        trailing_box.addWidget(self.btn_gpu_mem_undo)
+
+        grid.addLayout(trailing_box, 0, 2, Qt.AlignVCenter | Qt.AlignRight)
+        layout.addLayout(grid)
+
+        # Headroom Bar
+        self.gpu_mem_headroom_bar = GpuMemoryHeadroomBar()
+        layout.addWidget(self.gpu_mem_headroom_bar)
+
+        # Amber Overcommit Warning
+        self.gpu_overcommit_warning = QFrame()
+        self.gpu_overcommit_warning.setStyleSheet(
+            f"background-color: rgba(230, 126, 34, 0.15); border: 1px solid {STATUS_WARN}; border-radius: 6px; padding: 6px 10px;"
+        )
+        ow_layout = QHBoxLayout(self.gpu_overcommit_warning)
+        ow_layout.setContentsMargins(8, 4, 8, 4)
+        self.gpu_overcommit_warning_lbl = QLabel(
+            "⚠ Warning: Requested limit exceeds currently available RAM. Overcommitting may trigger swap thrashing or the system OOM killer."
+        )
+        self.gpu_overcommit_warning_lbl.setStyleSheet(f"color: {STATUS_WARN}; font-weight: 600; font-size: 12px;")
+        self.gpu_overcommit_warning_lbl.setWordWrap(True)
+        ow_layout.addWidget(self.gpu_overcommit_warning_lbl)
+        self.gpu_overcommit_warning.setVisible(False)
+        layout.addWidget(self.gpu_overcommit_warning)
+
+        # "Requested vs actual" Readout Box (Two balanced columns with clean separator)
+        readout_frame = QFrame()
+        readout_frame.setObjectName("GpuMemReadoutFrame")
+        readout_frame.setStyleSheet(
+            "QFrame#GpuMemReadoutFrame { background-color: palette(base); border: 1px solid palette(mid); border-radius: 8px; }"
+        )
+        readout_frame.setMinimumHeight(76)
+        rf_layout = QHBoxLayout(readout_frame)
+
+
+        rf_layout.setContentsMargins(16, 10, 16, 10)
+        rf_layout.setSpacing(20)
+
+        col_req = QVBoxLayout()
+        col_req.setSpacing(2)
+        lbl_req_title = QLabel("REQUESTED LIMIT")
+        lbl_req_title.setStyleSheet("font-size: 11px; font-weight: 700; color: palette(placeholder-text);")
+        col_req.addWidget(lbl_req_title)
+        self.lbl_gpu_mem_req_val = QLabel("Querying state...")
+        self.lbl_gpu_mem_req_val.setStyleSheet("font-size: 13px; font-weight: 700; color: palette(window-text);")
+        col_req.addWidget(self.lbl_gpu_mem_req_val)
+        self.lbl_gpu_mem_req_sub = QLabel("Environment status")
+        self.lbl_gpu_mem_req_sub.setProperty("class", "Footnote")
+        col_req.addWidget(self.lbl_gpu_mem_req_sub)
+        rf_layout.addLayout(col_req, 1)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setFrameShadow(QFrame.Plain)
+        sep.setStyleSheet("color: palette(mid);")
+        rf_layout.addWidget(sep)
+
+        col_act = QVBoxLayout()
+        col_act.setSpacing(2)
+        lbl_act_title = QLabel("ACTUAL VULKAN HEAP")
+        lbl_act_title.setStyleSheet("font-size: 11px; font-weight: 700; color: palette(placeholder-text);")
+        col_act.addWidget(lbl_act_title)
+        self.lbl_gpu_mem_act_val = QLabel("Querying Vulkan...")
+        self.lbl_gpu_mem_act_val.setStyleSheet("font-size: 13px; font-weight: 700; color: palette(window-text);")
+        col_act.addWidget(self.lbl_gpu_mem_act_val)
+        self.lbl_gpu_mem_act_sub = QLabel("Device-local memory heap")
+        self.lbl_gpu_mem_act_sub.setProperty("class", "Footnote")
+        col_act.addWidget(self.lbl_gpu_mem_act_sub)
+        rf_layout.addLayout(col_act, 1)
+
+        layout.addWidget(readout_frame)
+
+        # Per-App Launch Strings (Manual Override)
+        launch_frame = QFrame()
+        launch_frame.setObjectName("GpuMemLaunchFrame")
+        launch_frame.setStyleSheet(
+            "QFrame#GpuMemLaunchFrame { background-color: palette(base); border: 1px solid palette(mid); border-radius: 8px; }"
+        )
+        lf_layout = QVBoxLayout(launch_frame)
+        lf_layout.setContentsMargins(14, 10, 14, 10)
+        lf_layout.setSpacing(8)
+
+        lbl_launch_hdr = QLabel("Per-App Launch Strings (Manual Override)")
+        lbl_launch_hdr.setStyleSheet("font-size: 11px; font-weight: 700; color: palette(placeholder-text);")
+        lf_layout.addWidget(lbl_launch_hdr)
+
+        self.lbl_launch_unit_info = QLabel("")
+        self.lbl_launch_unit_info.setStyleSheet("font-size: 11px; font-weight: 600; color: palette(window-text);")
+        self.lbl_launch_unit_info.setWordWrap(True)
+        lf_layout.addWidget(self.lbl_launch_unit_info)
+
+        # Steam row
+        steam_row = QHBoxLayout()
+        steam_row.setSpacing(8)
+        lbl_steam = QLabel("Steam:")
+        lbl_steam.setStyleSheet("font-size: 12px; font-weight: 600; color: palette(window-text);")
+        lbl_steam.setFixedWidth(64)
+        steam_row.addWidget(lbl_steam)
+
+        self.txt_steam_launch = QLineEdit()
+        self.txt_steam_launch.setReadOnly(True)
+        self.txt_steam_launch.setStyleSheet("font-family: monospace; font-size: 11px;")
+        steam_row.addWidget(self.txt_steam_launch, 1)
+
+        self.btn_copy_steam = QPushButton("Copy")
+        self.btn_copy_steam.setProperty("class", "SecondaryButton")
+        self.btn_copy_steam.setIcon(make_tinted_icon("edit-copy-symbolic", self.palette().buttonText().color(), 14))
+        self.btn_copy_steam.clicked.connect(lambda: self._copy_to_clipboard(self.txt_steam_launch.text(), self.btn_copy_steam))
+        steam_row.addWidget(self.btn_copy_steam)
+        lf_layout.addLayout(steam_row)
+
+        # Terminal row
+        term_row = QHBoxLayout()
+        term_row.setSpacing(8)
+        lbl_term = QLabel("Terminal:")
+        lbl_term.setStyleSheet("font-size: 12px; font-weight: 600; color: palette(window-text);")
+        lbl_term.setFixedWidth(64)
+        term_row.addWidget(lbl_term)
+
+        self.txt_term_launch = QLineEdit()
+        self.txt_term_launch.setReadOnly(True)
+        self.txt_term_launch.setStyleSheet("font-family: monospace; font-size: 11px;")
+        term_row.addWidget(self.txt_term_launch, 1)
+
+        self.btn_copy_term = QPushButton("Copy")
+        self.btn_copy_term.setProperty("class", "SecondaryButton")
+        self.btn_copy_term.setIcon(make_tinted_icon("edit-copy-symbolic", self.palette().buttonText().color(), 14))
+        self.btn_copy_term.clicked.connect(lambda: self._copy_to_clipboard(self.txt_term_launch.text(), self.btn_copy_term))
+        term_row.addWidget(self.btn_copy_term)
+        lf_layout.addLayout(term_row)
+
+        layout.addWidget(launch_frame)
+
+        # Notice Frame for Apply feedback & running processes needing restart
+        self.gpu_mem_notice_frame = QFrame()
+        self.gpu_mem_notice_frame.setObjectName("GpuMemNoticeFrame")
+        self.gpu_mem_notice_frame.setStyleSheet(
+            f"QFrame#GpuMemNoticeFrame {{ background-color: palette(base); border: 1px solid {STATUS_OK}; border-radius: 8px; }}"
+        )
+        nf_layout = QVBoxLayout(self.gpu_mem_notice_frame)
+
+        nf_layout.setContentsMargins(12, 10, 12, 10)
+        nf_layout.setSpacing(6)
+
+        self.gpu_mem_notice_msg = QLabel("")
+        self.gpu_mem_notice_msg.setStyleSheet(f"font-weight: 700; color: {STATUS_OK}; font-size: 12px;")
+        self.gpu_mem_notice_msg.setWordWrap(True)
+        nf_layout.addWidget(self.gpu_mem_notice_msg)
+
+        self.gpu_mem_running_apps_lbl = QLabel("")
+        self.gpu_mem_running_apps_lbl.setStyleSheet("font-size: 11px; color: palette(window-text); line-height: 1.4;")
+        self.gpu_mem_running_apps_lbl.setWordWrap(True)
+        nf_layout.addWidget(self.gpu_mem_running_apps_lbl)
+
+        self.gpu_mem_notice_frame.setVisible(False)
+        layout.addWidget(self.gpu_mem_notice_frame)
+
+        layout.addSpacing(4)
+
+        # Card action buttons (separate from global apply/reset)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        btn_row.addStretch()
+
+        self.btn_gpu_mem_reset = QPushButton("Reset Card")
+        self.btn_gpu_mem_reset.setProperty("class", "SecondaryButton")
+        self.btn_gpu_mem_reset.setToolTip("Reset to No limit (Mesa driver default)")
+        self.btn_gpu_mem_reset.clicked.connect(self._reset_gpu_mem_card)
+        btn_row.addWidget(self.btn_gpu_mem_reset)
+
+        self.btn_gpu_mem_apply = QPushButton("Apply GPU Limit")
+        self.btn_gpu_mem_apply.setProperty("class", "ApplyButton")
+        self.btn_gpu_mem_apply.setToolTip("Applies limit immediately to environment.d, systemd, and D-Bus session")
+        self.btn_gpu_mem_apply.clicked.connect(self._apply_gpu_mem_limit)
+        btn_row.addWidget(self.btn_gpu_mem_apply)
+
+        layout.addLayout(btn_row)
+
+        return self.gpu_mem_card
+
+    def _select_gpu_mem_preset(self, val_gb: Optional[int]):
+        """Selects a preset limit (4 GB, 8 GB, Max GB, or None for No limit)."""
+        if val_gb is None:
+            self.chk_gpu_mem_limit.setChecked(False)
+        else:
+            self.chk_gpu_mem_limit.setChecked(True)
+            self.spin_gpu_mem.setValue(val_gb)
+        self._update_gpu_mem_ui_state()
+
+    def _on_gpu_mem_toggle(self, checked: bool):
+        self._update_gpu_mem_ui_state()
+
+    def _on_gpu_mem_slider_changed(self, val: int):
+        if self.spin_gpu_mem.value() != val:
+            self.spin_gpu_mem.blockSignals(True)
+            self.spin_gpu_mem.setValue(val)
+            self.spin_gpu_mem.blockSignals(False)
+        self._update_gpu_mem_ui_state()
+
+    def _on_gpu_mem_spin_changed(self, val: int):
+        if self.slider_gpu_mem.value() != val:
+            self.slider_gpu_mem.blockSignals(True)
+            self.slider_gpu_mem.setValue(val)
+            self.slider_gpu_mem.blockSignals(False)
+        self._update_gpu_mem_ui_state()
+
+    def _apply_gpu_mem_limit(self):
+        """Applies the configured GPU memory limit to environment.d, systemctl and dbus."""
+        if not self.gpu_mem_supported:
+            return
+
+        is_enabled = self.chk_gpu_mem_limit.isChecked()
+        chosen_gb = self.spin_gpu_mem.value() if is_enabled else None
+        total_bytes = self.gpu_mem_info.get("mem_total_bytes", 16 * 1024**3)
+
+        res = apply_gpu_memory_limit(chosen_gb, self.gpu_mem_format, total_bytes)
+        if not res.get("success"):
+            err = res.get("error", "Unknown error")
+            self.gpu_mem_warning_banner.setVisible(True)
+            self.gpu_mem_warning_lbl.setText(f"Failed to apply: {err}")
+            return
+
+        warning = res.get("warning")
+        if warning:
+            self.gpu_mem_mismatch_banner.setVisible(True)
+            self.gpu_mem_mismatch_lbl.setText(f"⚠ {warning}")
+        else:
+            self.gpu_mem_mismatch_banner.setVisible(False)
+
+        # Update persistent badges (card & bottom status bar across all tabs)
+        if is_enabled and chosen_gb is not None:
+            self._active_gpu_mem_limit = chosen_gb
+            self.gpu_mem_card_badge.setText(f"GPU memory limit active: {chosen_gb} GB")
+            badge_text = f"GPU memory limit active: {chosen_gb} GB" if self.width() > 1080 else f"GPU limit: {chosen_gb} GB"
+            self.gpu_mem_status_badge.setText(badge_text)
+            self.gpu_mem_card_badge.setVisible(True)
+            self.gpu_mem_status_badge.setVisible(True)
+        else:
+            self._active_gpu_mem_limit = None
+            self.gpu_mem_card_badge.setVisible(False)
+            self.gpu_mem_status_badge.setVisible(False)
+
+
+        # Process scan: Find running Vulkan / AI / game apps needing restart
+        running_apps = get_running_vulkan_apps()
+        self.gpu_mem_notice_frame.setVisible(True)
+        if is_enabled and chosen_gb is not None:
+            self.gpu_mem_notice_msg.setText("✓ Applies to apps launched from now on. Restart running apps to use the new limit.")
+            if running_apps:
+                app_lines = [f"• {a['name']} (PID {a['pid']}) [needs restart]" for a in running_apps[:6]]
+                self.gpu_mem_running_apps_lbl.setText("Running processes needing restart to pick up new limit:\n" + "\n".join(app_lines))
+                self.gpu_mem_running_apps_lbl.setVisible(True)
+            else:
+                self.gpu_mem_running_apps_lbl.setText("No active Vulkan or AI processes currently running.")
+                self.gpu_mem_running_apps_lbl.setVisible(True)
+        else:
+            self.gpu_mem_notice_msg.setText("✓ Max GPU memory cap removed. Driver restored to default allocation.")
+            if running_apps:
+                app_lines = [f"• {a['name']} (PID {a['pid']}) [needs restart]" for a in running_apps[:6]]
+                self.gpu_mem_running_apps_lbl.setText("Running processes still holding previous memory limit until restarted:\n" + "\n".join(app_lines))
+                self.gpu_mem_running_apps_lbl.setVisible(True)
+            else:
+                self.gpu_mem_running_apps_lbl.setVisible(False)
+
+        # Refresh actual Vulkan heap in background worker
+        if hasattr(self, "gpu_mem_worker") and not self.gpu_mem_worker.isRunning():
+            self.gpu_mem_worker = GpuMemoryDetectWorker(self)
+            self.gpu_mem_worker.finished.connect(self._on_gpu_mem_detected)
+            self.gpu_mem_worker.start()
+
+        self._update_gpu_mem_ui_state()
+
+        if hasattr(self, "log_text"):
+            if is_enabled and chosen_gb is not None:
+                self.log_text.append(f"[+] Applied Max GPU memory limit: {chosen_gb} GB ({ENV_VAR_NAME}={res.get('raw_value')}).")
+            else:
+                self.log_text.append("[+] Reset Max GPU memory limit (driver default ~75% RAM).")
+
+    def _reset_gpu_mem_card(self):
+        """Resets GPU memory limit to 'No limit' and applies the removal immediately."""
+        self._select_gpu_mem_preset(None)
+        self._apply_gpu_mem_limit()
+
+
+    def _on_gpu_mem_detected(self, data: dict):
+        """Callback from background GpuMemoryDetectWorker."""
+        det = data.get("detection", {})
+        status = data.get("status", {})
+        self.gpu_mem_supported = det.get("supported", False)
+        self.gpu_mem_format = det.get("format")
+        self.gpu_mem_info = status.get("mem_info") or get_system_memory_info()
+        self.gpu_mem_actual_heap_bytes = data.get("actual_heap_bytes")
+
+        max_gb = self.gpu_mem_info.get("max_limit_gb", 12)
+        self.slider_gpu_mem.setRange(1, max_gb)
+        self.spin_gpu_mem.setRange(1, max_gb)
+        self.lbl_gpu_mem_max.setText(f"{max_gb} GB")
+        self.chip_max.setText(f"AI / Max ({max_gb} GB)")
+
+        if not self.gpu_mem_supported:
+            reason = det.get("reason", "This Mesa build does not honor ANV_SYS_MEM_LIMIT")
+            self.gpu_mem_warning_banner.setVisible(True)
+            self.gpu_mem_warning_lbl.setText(f"Feature unavailable: {reason}")
+            self.gpu_mem_card.setToolTip(f"Max GPU memory unavailable: {reason}")
+            self.chk_gpu_mem_limit.setEnabled(False)
+            self.slider_gpu_mem.setEnabled(False)
+            self.spin_gpu_mem.setEnabled(False)
+            self.btn_gpu_mem_undo.setEnabled(False)
+            self.chip_gaming.setEnabled(False)
+            self.chip_balanced.setEnabled(False)
+            self.chip_max.setEnabled(False)
+            self.chip_none.setEnabled(False)
+            self.btn_gpu_mem_apply.setEnabled(False)
+            self.btn_gpu_mem_reset.setEnabled(False)
+            self.lbl_gpu_mem_act_val.setText("Unsupported")
+            self.lbl_gpu_mem_act_sub.setText(reason)
+            return
+
+        self.gpu_mem_warning_banner.setVisible(False)
+        self.gpu_mem_card.setToolTip("")
+
+        # Session mismatch notice
+        if status.get("mismatch"):
+            self.gpu_mem_mismatch_banner.setVisible(True)
+            self.gpu_mem_mismatch_lbl.setText(
+                "⚠ Notice: Configured environment.d limit differs from active session (will apply from next login)."
+            )
+        else:
+            self.gpu_mem_mismatch_banner.setVisible(False)
+
+        # Actual heap readout
+        if self.gpu_mem_actual_heap_bytes is not None:
+            actual_gb = self.gpu_mem_actual_heap_bytes / (1024**3)
+            actual_mb = self.gpu_mem_actual_heap_bytes / (1024**2)
+            self.lbl_gpu_mem_act_val.setText(f"{actual_gb:.1f} GiB ({actual_mb:,.0f} MB)")
+            if status.get("file_val") or status.get("session_val"):
+                self.lbl_gpu_mem_act_sub.setText("Device-local heap with active limit")
+            else:
+                self.lbl_gpu_mem_act_sub.setText("Device-local heap (Mesa default ~75% RAM)")
+        else:
+            self.lbl_gpu_mem_act_val.setText("Unknown")
+            self.lbl_gpu_mem_act_sub.setText("Could not query Vulkan heap")
+
+
+        # Load active limit from environment or state
+        active_gb = status.get("active_limit_gb")
+        if active_gb is not None and active_gb > 0:
+            self._active_gpu_mem_limit = active_gb
+            self.chk_gpu_mem_limit.setChecked(True)
+            self.slider_gpu_mem.setValue(active_gb)
+            self.spin_gpu_mem.setValue(active_gb)
+            self.gpu_mem_card_badge.setText(f"GPU memory limit active: {active_gb} GB")
+            badge_text = f"GPU memory limit active: {active_gb} GB" if self.width() > 1080 else f"GPU limit: {active_gb} GB"
+            self.gpu_mem_status_badge.setText(badge_text)
+            self.gpu_mem_card_badge.setVisible(True)
+            self.gpu_mem_status_badge.setVisible(True)
+        else:
+            self._active_gpu_mem_limit = None
+            self.chk_gpu_mem_limit.setChecked(False)
+            self.slider_gpu_mem.setValue(min(4, max_gb))
+            self.spin_gpu_mem.setValue(min(4, max_gb))
+            self.gpu_mem_card_badge.setVisible(False)
+            self.gpu_mem_status_badge.setVisible(False)
+
+
+        self._update_gpu_mem_ui_state()
+
+    def _update_gpu_mem_ui_state(self):
+        """Updates the requested limit readout, headroom bar, launch strings, and overcommit warning."""
+        if not self.gpu_mem_supported:
+            return
+
+        is_enabled = self.chk_gpu_mem_limit.isChecked()
+        self.slider_gpu_mem.setEnabled(is_enabled)
+        self.spin_gpu_mem.setEnabled(is_enabled)
+        self.btn_gpu_mem_undo.setEnabled(is_enabled)
+
+        # Preset chips enabled/dimmed state (Requirement 2)
+        self.chip_gaming.setEnabled(is_enabled)
+        self.chip_balanced.setEnabled(is_enabled)
+        self.chip_max.setEnabled(is_enabled)
+        self.chip_none.setEnabled(is_enabled)
+
+        total_gb = self.gpu_mem_info.get("total_gb", 15.3)
+        avail_gb = self.gpu_mem_info.get("available_gb", 8.0)
+        max_gb = self.gpu_mem_info.get("max_limit_gb", 12)
+        chosen_gb = self.spin_gpu_mem.value() if is_enabled else None
+        total_bytes = int(self.gpu_mem_info.get("mem_total_bytes", 16 * 1024**3))
+
+        # Highlight active preset chip (Requirement 4)
+        if is_enabled and chosen_gb is not None:
+            self.chip_gaming.setChecked(chosen_gb == 4)
+            self.chip_balanced.setChecked(chosen_gb == 8)
+            self.chip_max.setChecked(chosen_gb == max_gb)
+            self.chip_none.setChecked(False)
+        else:
+            self.chip_gaming.setChecked(False)
+            self.chip_balanced.setChecked(False)
+            self.chip_max.setChecked(False)
+            self.chip_none.setChecked(True)
+
+        # Update Headroom bar with Legend, Marker & Status Chip (Requirements 2, 5, 6)
+        self.gpu_mem_headroom_bar.set_memory_state(total_gb, avail_gb, chosen_gb)
+
+        # Update per-app launch strings (Requirement 3)
+        ls = get_launch_strings(chosen_gb, self.gpu_mem_format, total_bytes)
+        if hasattr(self, "txt_steam_launch"):
+            self.txt_steam_launch.setText(ls["steam"])
+        if hasattr(self, "txt_term_launch"):
+            self.txt_term_launch.setText(ls["terminal"])
+        if hasattr(self, "lbl_launch_unit_info"):
+            if is_enabled and chosen_gb is not None:
+                self.lbl_launch_unit_info.setText(f"Active launch variable: {ENV_VAR_NAME}={ls.get('raw_description', ls['raw_value'])}")
+            else:
+                self.lbl_launch_unit_info.setText(f"Default launch variable (No limit): {ENV_VAR_NAME}=unset (Mesa driver allocates ~75% RAM)")
+
+        if is_enabled and chosen_gb is not None:
+            raw_val = "--"
+            if self.gpu_mem_format:
+                try:
+                    raw_val = format_limit_value(
+                        chosen_gb,
+                        self.gpu_mem_format,
+                        total_bytes,
+                    )
+                except Exception:
+                    pass
+
+            if self.gpu_mem_format == "percent":
+                raw_desc = f"{raw_val} ({raw_val}% of RAM, about {chosen_gb} GB)"
+                unit_note = f"Detected unit: percentage of system RAM (10–100%). Current setting: {chosen_gb} GB = {raw_val} ({raw_val}% of {total_gb:.1f} GB RAM)."
+            elif self.gpu_mem_format == "mb":
+                raw_desc = f"{raw_val} ({raw_val} MB, about {chosen_gb} GB)"
+                unit_note = f"Detected unit: Megabytes (MB). Current setting: {chosen_gb} GB = {raw_val} MB."
+            elif self.gpu_mem_format == "bytes":
+                raw_desc = f"{raw_val} bytes (about {chosen_gb} GB)"
+                unit_note = f"Detected unit: Bytes. Current setting: {chosen_gb} GB = {raw_val} bytes."
+            else:
+                raw_desc = f"{raw_val} ({chosen_gb} GB)"
+                unit_note = f"Detected unit: {self.gpu_mem_format}."
+
+            if hasattr(self, "lbl_gpu_mem_unit_note"):
+                self.lbl_gpu_mem_unit_note.setText(unit_note)
+
+            self.lbl_gpu_mem_req_val.setText(f"{chosen_gb} GB  •  {ENV_VAR_NAME}={raw_desc}")
+            self.lbl_gpu_mem_req_sub.setText(f"Mesa anv variable: {ENV_VAR_NAME}={raw_val} (takes integer {self.gpu_mem_format})")
+
+            # Check overcommit warning
+            if chosen_gb > avail_gb:
+                self.gpu_overcommit_warning.setVisible(True)
+                self.gpu_overcommit_warning_lbl.setText(
+                    f"⚠ Warning: Requested limit ({chosen_gb} GB) exceeds currently available RAM ({avail_gb:.1f} GB). "
+                    "Overcommitting can push the system into swap or trigger the Linux OOM killer."
+                )
+            else:
+                self.gpu_overcommit_warning.setVisible(False)
+        else:
+            if hasattr(self, "lbl_gpu_mem_unit_note"):
+                self.lbl_gpu_mem_unit_note.setText("Driver default: ANV_SYS_MEM_LIMIT unset (~75% RAM allocation). Toggle 'Limit enabled' to set a cap.")
+            self.lbl_gpu_mem_req_val.setText("No limit (variable unset)")
+            self.lbl_gpu_mem_req_sub.setText("Mesa anv default driver allocation (~75% of RAM, about 11.5 GB)")
+            self.gpu_overcommit_warning.setVisible(False)
+
+
 
     def _build_display_tab(self) -> QWidget:
         scroll = QScrollArea()
@@ -1387,7 +2090,7 @@ class MainWindow(QMainWindow):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setFixedHeight(160)
-        self.log_text.setPlainText(f"{APP_NAME} v0.2.1 started.\nPolling sensors every 1000ms.\n")
+        self.log_text.setPlainText(f"{APP_NAME} v0.2.3 started.\nPolling sensors every 1000ms.\n")
         self.log_section.add_widget(self.log_text)
         layout.addWidget(self.log_section)
 
@@ -1496,8 +2199,20 @@ class MainWindow(QMainWindow):
             self.btn_copy_report.setIcon(make_tinted_icon("edit-copy-symbolic", btn_text_color, 14))
         if hasattr(self, "btn_copy_cmds"):
             self.btn_copy_cmds.setIcon(make_tinted_icon("edit-copy-symbolic", btn_text_color, 14))
+        if hasattr(self, "btn_gpu_mem_undo"):
+            self.btn_gpu_mem_undo.setIcon(make_tinted_icon("edit-undo-symbolic", btn_text_color, 14))
+        if hasattr(self, "btn_copy_steam"):
+            self.btn_copy_steam.setIcon(make_tinted_icon("edit-copy-symbolic", btn_text_color, 14))
+        if hasattr(self, "btn_copy_term"):
+            self.btn_copy_term.setIcon(make_tinted_icon("edit-copy-symbolic", btn_text_color, 14))
         if hasattr(self, "warning_icon_lbl"):
             self.warning_icon_lbl.setPixmap(make_tinted_icon("dialog-warning-symbolic", QColor(STATUS_CRITICAL), 18).pixmap(18, 18))
+
+        # Update system tray symbolic icon with updated palette
+        if hasattr(self, "tray") and self.tray:
+            self.tray.setIcon(get_symbolic_app_icon(text_color))
+
+
 
     def _copy_to_clipboard(self, text: str, btn: QPushButton = None):
         clipboard = QApplication.clipboard()
@@ -1717,6 +2432,9 @@ class MainWindow(QMainWindow):
         """Resets current profile and sliders to Daily Balanced baseline."""
         self._load_profile_into_ui("balanced")
         self.profile_mgr.set_active_profile("balanced")
+        if hasattr(self, "log_text"):
+            self.log_text.append("[*] Reset profile to Balanced (GPU memory limit unchanged).")
+
 
     def _apply_settings(self):
         """Sends staged hardware changes to daemon with a 15-second auto-revert countdown."""
@@ -1867,8 +2585,8 @@ class MainWindow(QMainWindow):
                 lim_resp = self._send_to_daemon({"cmd": "get_limits"})
                 if lim_resp.get("status") == "ok":
                     lim = lim_resp.get("hardware_limits", {})
-                    self.slider_pl1.set_range(int(lim.get("pl1_min_w", 10)), int(lim.get("pl1_max_w", 30)))
-                    self.slider_pl2.set_range(int(lim.get("pl2_min_w", 10)), int(lim.get("pl2_max_w", 45)))
+                    self.slider_pl1.set_range(int(lim.get("pl1_min_w", 10)), int(lim.get("pl1_max_w", 35)))
+                    self.slider_pl2.set_range(int(lim.get("pl2_min_w", 10)), int(lim.get("pl2_max_w", 55)))
                     self.slider_gpu_min.set_range(int(lim.get("gpu_min_mhz", 100)), int(lim.get("gpu_max_mhz", 1250)))
                     self.slider_gpu_max.set_range(int(lim.get("gpu_min_mhz", 100)), int(lim.get("gpu_max_mhz", 1250)))
                     self._limits_loaded = True
@@ -2038,18 +2756,25 @@ class MainWindow(QMainWindow):
     def _setup_tray(self):
         self.tray = QSystemTrayIcon(self)
         app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        icon = QIcon.fromTheme("hp-control-center")
-        if icon.isNull():
+
+        # Window icon (standard branding)
+        window_icon = QIcon.fromTheme("hp-control-center")
+        if window_icon.isNull():
             svg_path = os.path.join(app_dir, "hicolor", "scalable", "apps", "hp-control-center.svg")
             png_path = os.path.join(app_dir, "hicolor", "256x256", "apps", "hp-control-center.png")
             if os.path.exists(svg_path):
-                icon = QIcon(svg_path)
+                window_icon = QIcon(svg_path)
             elif os.path.exists(png_path):
-                icon = QIcon(png_path)
+                window_icon = QIcon(png_path)
             else:
-                icon = self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon)
-        self.setWindowIcon(icon)
-        self.tray.setIcon(icon)
+                window_icon = self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon)
+        self.setWindowIcon(window_icon)
+
+        # Taskbar / System Tray icon (symbolic monochrome icon matching active palette)
+        pal = self.palette()
+        text_color = pal.windowText().color()
+        tray_icon = get_symbolic_app_icon(text_color)
+        self.tray.setIcon(tray_icon)
 
         tray_menu = QMenu()
         pal = self.palette()

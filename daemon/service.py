@@ -36,9 +36,9 @@ DAEMON_FALLBACK_STATE_FILE = os.path.expanduser("~/.config/hp-control-center/dae
 _gpu_min, _gpu_max = get_gpu_hardware_limits()
 HARDWARE_LIMITS = {
     "pl1_min_w": 10.0,
-    "pl1_max_w": 30.0,
+    "pl1_max_w": 35.0,
     "pl2_min_w": 10.0,
-    "pl2_max_w": 45.0,
+    "pl2_max_w": 55.0,
     "gpu_min_mhz": _gpu_min,
     "gpu_max_mhz": _gpu_max,
     "valid_epp": ["performance", "balance_performance", "balance_power", "power", "default"],
